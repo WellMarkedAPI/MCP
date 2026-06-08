@@ -1,0 +1,66 @@
+{
+  "name": "wellmarked-mcp",
+  "version": "1.0.0",
+  "description": "Official Model Context Protocol (MCP) server for the WellMarked API — let AI agents convert any URL to clean Markdown, bulk-extract, and crawl sites.",
+  "keywords": [
+    "wellmarked",
+    "mcp",
+    "model-context-protocol",
+    "markdown",
+    "scraping",
+    "extraction",
+    "html-to-markdown",
+    "rag",
+    "llm",
+    "agents"
+  ],
+  "homepage": "https://wellmarked.io",
+  "bugs": {
+    "url": "https://github.com/WellMarkedAPI/WellMarked/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WellMarkedAPI/WellMarked.git",
+    "directory": "mcp"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "WellMarked",
+    "email": "support@wellmarked.io",
+    "url": "https://wellmarked.io"
+  },
+  "type": "module",
+  "bin": {
+    "wellmarked-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "scripts": {
+    "build": "rimraf dist && tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "wellmarked": "file:../JS-TS-SDK",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.4.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

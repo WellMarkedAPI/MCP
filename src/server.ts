@@ -10,7 +10,7 @@
  *
  * Tools:
  *   - extract        — one URL → clean Markdown.
- *   - bulk_extract   — many URLs → an async job.
+ *   - bulk           — many URLs → an async job.
  *   - crawl          — crawl a site from a root URL → an async job.
  *   - get_job        — poll a bulk/crawl job once.
  *   - wait_for_job   — block until a job finishes (or times out).
@@ -203,9 +203,9 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
     },
   );
 
-  // ── bulk_extract ─────────────────────────────────────────────────────────
+  // ── bulk ─────────────────────────────────────────────────────────────────
   server.registerTool(
-    "bulk_extract",
+    "bulk",
     {
       title: "Bulk-extract many URLs",
       description:
@@ -322,7 +322,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         "crawl job by id. Works for both job kinds. Jobs are retained for " +
         "6 hours after they finish.",
       inputSchema: {
-        job_id: z.string().describe("The job id returned by bulk_extract or crawl."),
+        job_id: z.string().describe("The job id returned by bulk or crawl."),
       },
       annotations: {
         readOnlyHint: true,
@@ -348,7 +348,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
       description:
         "Block until a bulk or crawl job reaches status=done (or the " +
         "timeout elapses), then return all results. Use after crawl() or " +
-        "bulk_extract(wait=false) when you want the finished output in one " +
+        "bulk(wait=false) when you want the finished output in one " +
         "call instead of polling get_job in a loop.",
       inputSchema: {
         job_id: z.string().describe("The job id to wait on."),
@@ -388,7 +388,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
       description:
         "Return the account's request usage for the current billing period: " +
         "plan, period, used, limit, and remaining. Does not count against " +
-        "the quota. Check this before a large bulk_extract or crawl to avoid " +
+        "the quota. Check this before a large bulk or crawl to avoid " +
         "hitting the monthly limit mid-job.",
       inputSchema: {},
       annotations: {

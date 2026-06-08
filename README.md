@@ -14,7 +14,7 @@ hints, and polymorphic job polling.
 | Tool | What it does |
 | --- | --- |
 | `extract` | Fetch one URL and return its main content as clean Markdown + metadata. |
-| `bulk_extract` | Submit many URLs for concurrent extraction (Pro+). Blocks for results by default. |
+| `bulk` | Submit many URLs for concurrent extraction (Pro+). Blocks for results by default. |
 | `crawl` | Crawl a site BFS from a root URL to a given depth (Pro+). Returns an async job. |
 | `get_job` | Poll a bulk/crawl job once by id. |
 | `wait_for_job` | Block until a job finishes, then return all results. |

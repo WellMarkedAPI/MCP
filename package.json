@@ -16,12 +16,11 @@
   ],
   "homepage": "https://wellmarked.io",
   "bugs": {
-    "url": "https://github.com/WellMarkedAPI/WellMarked/issues"
+    "url": "https://github.com/WellMarkedAPI/MCP/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/WellMarkedAPI/WellMarked.git",
-    "directory": "mcp"
+    "url": "git+https://github.com/WellMarkedAPI/MCP.git"
   },
   "license": "MIT",
   "author": {

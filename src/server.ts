@@ -29,6 +29,7 @@ import {
   WellMarkedError,
   type WellMarkedOptions,
   type BulkJob,
+  type Content,
   type CrawlJob,
   type ExtractResult,
   type SearchResults,
@@ -109,6 +110,60 @@ const policyInputSchema = {
     ),
 };
 
+// ── Output format ───────────────────────────────────────────────────────────
+// Shared across extract / bulk / crawl. Kept off `search`, which always returns
+// markdown — search hands an agent N pages to read, and the other formats serve
+// pipelines that already know which URL they want.
+const formatInputSchema = {
+  format: z
+    .enum(["markdown", "json", "chunks", "html", "links"])
+    .optional()
+    .describe(
+      "Output format. 'markdown' (default) is clean prose; 'json' returns typed " +
+        "heading/paragraph/list/code blocks; 'chunks' returns contiguous " +
+        "500-token windows ready for embedding; 'html' returns the raw fetched " +
+        "HTML; 'links' returns every http(s) link on the page.",
+    ),
+};
+
+/**
+ * Render whichever content field a result carries into text.
+ *
+ * MCP tools return text, so each non-markdown format needs a legible textual
+ * projection — an agent reading `[object Object]` is strictly worse off than
+ * one reading markdown. Chunks and blocks keep their structure visible
+ * (offsets, block types) because that's the reason the caller asked for them.
+ */
+function renderContent(item: Content): string | null {
+  if (item.markdown !== null) return item.markdown;
+  if (item.html !== null) return item.html;
+  if (item.links !== null) return item.links.join("\n");
+  if (item.blocks !== null) {
+    return item.blocks
+      .map((b) => {
+        const label = b.type === "heading" ? `heading h${b.level ?? 1}` : b.type;
+        return `[${label}] ${b.text}`;
+      })
+      .join("\n\n");
+  }
+  if (item.chunks !== null) {
+    return item.chunks
+      .map((c) => `[tokens ${c.startToken}-${c.endToken}]\n${c.text}`)
+      .join("\n\n");
+  }
+  return null;
+}
+
+/** One line of ROI metrics, when the API reported them. */
+function renderMetrics(item: Content): string | null {
+  const m = item.metrics;
+  if (!m || m.tokensSaved === null) return null;
+  return (
+    `Tokens: ${m.outputTokens} out of ${m.inputTokens} raw ` +
+    `(saved ${m.tokensSaved}, −${m.reductionPct}%)`
+  );
+}
+
 interface PolicyToolArgs {
   allow_domains?: string[];
   deny_patterns?: string[];
@@ -146,7 +201,9 @@ function renderExtract(r: ExtractResult): string {
   ]
     .filter(Boolean)
     .join("\n");
-  return `${header}\n\n---\n\n${r.markdown}`;
+  const metrics = renderMetrics(r);
+  const full = metrics ? `${header}\n${metrics}` : header;
+  return `${full}\n\n---\n\n${renderContent(r) ?? "(no content)"}`;
 }
 
 function renderJob(job: BulkJob | CrawlJob): string {
@@ -182,9 +239,10 @@ function renderJob(job: BulkJob | CrawlJob): string {
       "depth" in item ? `  (depth ${(item as { depth: number }).depth})` : "";
     const flag = item.ok ? "✓" : `✗ error: ${item.error ?? "unknown"}`;
     lines.push(`## ${item.url}${depth}  ${flag}`);
-    if (item.ok && item.markdown) {
+    const body = item.ok ? renderContent(item) : null;
+    if (body) {
       lines.push("");
-      lines.push(item.markdown);
+      lines.push(body);
     }
   }
   return lines.join("\n");
@@ -255,6 +313,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
               "and the feature enabled on the API instance. Default false.",
           ),
         ...policyInputSchema,
+        ...formatInputSchema,
       },
       annotations: {
         readOnlyHint: true,
@@ -262,10 +321,11 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         idempotentHint: true,
       },
     },
-    async ({ url, render_js, allow_domains, deny_patterns, respect_robots }) => {
+    async ({ url, render_js, format, allow_domains, deny_patterns, respect_robots }) => {
       try {
         const result = await client.extract(url, {
           renderJs: render_js,
+          format,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
         return ok(renderExtract(result));
@@ -309,13 +369,15 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           .optional()
           .describe("Max ms to wait when wait=true. Default 300000 (5 min)."),
         ...policyInputSchema,
+        ...formatInputSchema,
       },
       annotations: { openWorldHint: true },
     },
-    async ({ urls, render_js, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
+    async ({ urls, render_js, format, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
       try {
         let job = await client.bulk(urls, {
           renderJs: render_js,
+          format,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
         if (wait !== false) {
@@ -368,14 +430,16 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           .optional()
           .describe("Max ms to wait when wait=true. Default 300000 (5 min)."),
         ...policyInputSchema,
+        ...formatInputSchema,
       },
       annotations: { openWorldHint: true },
     },
-    async ({ url, depth, render_js, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
+    async ({ url, depth, render_js, format, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
       try {
         let job: BulkJob | CrawlJob = await client.crawl(url, {
           depth,
           renderJs: render_js,
+          format,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
         if (wait === true) {

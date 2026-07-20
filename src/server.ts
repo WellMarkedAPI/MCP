@@ -31,6 +31,7 @@ import {
   type BulkJob,
   type CrawlJob,
   type ExtractResult,
+  type SearchResults,
   type Usage,
 } from "wellmarked";
 
@@ -78,6 +79,54 @@ function toErrorResult(err: unknown): ToolResult {
 /** `Date | null` → ISO string or "—". */
 function iso(d: Date | null): string {
   return d ? d.toISOString() : "—";
+}
+
+// ── Compliance overrides ────────────────────────────────────────────────────
+// Shared across extract / bulk / crawl. These can only NARROW the API key's own
+// policy server-side (add denies, restrict domains, upgrade robots to strict),
+// never widen it — so exposing them to an agent is safe.
+const policyInputSchema = {
+  allow_domains: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Restrict this request to these domains (and their subdomains). Can only " +
+        "narrow the key's own allow-list, never widen it.",
+    ),
+  deny_patterns: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Extra deny globs for this request, matched against the hostname and the " +
+        "full URL. Added to the key's deny list.",
+    ),
+  respect_robots: z
+    .enum(["strict", "lax"])
+    .optional()
+    .describe(
+      "'strict' honors robots.txt on this request (extract/bulk too, not just " +
+        "crawl); can tighten the key's setting but never loosen it.",
+    ),
+};
+
+interface PolicyToolArgs {
+  allow_domains?: string[];
+  deny_patterns?: string[];
+  respect_robots?: "strict" | "lax";
+}
+
+/** Map the snake_case tool args to the SDK's camelCase policy options. Unset
+ * fields stay undefined; the SDK omits them so the key's policy is untouched. */
+function toPolicyOptions(a: PolicyToolArgs): {
+  allowDomains?: string[];
+  denyPatterns?: string[];
+  respectRobots?: "strict" | "lax";
+} {
+  return {
+    allowDomains: a.allow_domains,
+    denyPatterns: a.deny_patterns,
+    respectRobots: a.respect_robots,
+  };
 }
 
 // ── Renderers ─────────────────────────────────────────────────────────────────
@@ -141,6 +190,25 @@ function renderJob(job: BulkJob | CrawlJob): string {
   return lines.join("\n");
 }
 
+function renderSearch(res: SearchResults): string {
+  const lines: string[] = [
+    `Search: ${res.query}  (${res.results.length} results)`,
+    `Request ID: ${res.requestId}`,
+  ];
+  for (const item of res.results) {
+    lines.push("");
+    const flag = item.ok ? "✓" : `✗ error: ${item.error ?? "unknown"}`;
+    lines.push(`## ${item.title || item.url}  ${flag}`);
+    lines.push(item.url);
+    if (item.snippet) lines.push(`> ${item.snippet}`);
+    if (item.ok && item.markdown) {
+      lines.push("");
+      lines.push(item.markdown);
+    }
+  }
+  return lines.join("\n");
+}
+
 function renderUsage(u: Usage): string {
   const pct = u.limit > 0 ? Math.round((u.used / u.limit) * 100) : 0;
   return [
@@ -186,6 +254,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
               "Needed for SPA / client-rendered pages. Requires a Pro+ plan " +
               "and the feature enabled on the API instance. Default false.",
           ),
+        ...policyInputSchema,
       },
       annotations: {
         readOnlyHint: true,
@@ -193,9 +262,12 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         idempotentHint: true,
       },
     },
-    async ({ url, render_js }) => {
+    async ({ url, render_js, allow_domains, deny_patterns, respect_robots }) => {
       try {
-        const result = await client.extract(url, { renderJs: render_js });
+        const result = await client.extract(url, {
+          renderJs: render_js,
+          ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
+        });
         return ok(renderExtract(result));
       } catch (err) {
         return toErrorResult(err);
@@ -236,12 +308,16 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           .positive()
           .optional()
           .describe("Max ms to wait when wait=true. Default 300000 (5 min)."),
+        ...policyInputSchema,
       },
       annotations: { openWorldHint: true },
     },
-    async ({ urls, render_js, wait, wait_timeout_ms }) => {
+    async ({ urls, render_js, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
       try {
-        let job = await client.bulk(urls, { renderJs: render_js });
+        let job = await client.bulk(urls, {
+          renderJs: render_js,
+          ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
+        });
         if (wait !== false) {
           job = (await client.waitForJob(job.jobId, {
             timeoutMs: wait_timeout_ms ?? 300_000,
@@ -291,14 +367,16 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           .positive()
           .optional()
           .describe("Max ms to wait when wait=true. Default 300000 (5 min)."),
+        ...policyInputSchema,
       },
       annotations: { openWorldHint: true },
     },
-    async ({ url, depth, render_js, wait, wait_timeout_ms }) => {
+    async ({ url, depth, render_js, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
       try {
         let job: BulkJob | CrawlJob = await client.crawl(url, {
           depth,
           renderJs: render_js,
+          ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
         if (wait === true) {
           job = await client.waitForJob(job.jobId, {
@@ -306,6 +384,50 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           });
         }
         return ok(renderJob(job));
+      } catch (err) {
+        return toErrorResult(err);
+      }
+    },
+  );
+
+  // ── search ─────────────────────────────────────────────────────────────────
+  server.registerTool(
+    "search",
+    {
+      title: "Search the web and extract the results",
+      description:
+        "Search the web for a query and get each result page back as clean " +
+        "Markdown — search plus extraction in one synchronous call, no job to " +
+        "poll. Use this to answer a question from the live web when you don't " +
+        "already have the URLs. Returns up to num_results pages, each with a " +
+        "status (a slow or blocked page comes back as an error item, not a " +
+        "failure of the whole call). Requires a Pro+ plan.",
+      inputSchema: {
+        query: z.string().min(1).describe("The search query."),
+        num_results: z
+          .number()
+          .int()
+          .min(1)
+          .max(10)
+          .optional()
+          .describe("How many results to fetch + extract (1–10). Default 5."),
+        render_js: z
+          .boolean()
+          .optional()
+          .describe("Render JavaScript on each result page before extracting. Default false."),
+      },
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ query, num_results, render_js }) => {
+      try {
+        const res = await client.search(query, {
+          numResults: num_results,
+          renderJs: render_js,
+        });
+        return ok(renderSearch(res));
       } catch (err) {
         return toErrorResult(err);
       }

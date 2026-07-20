@@ -27,8 +27,35 @@ hints, and polymorphic job polling.
 
 ## Setup
 
-You need a WellMarked API key (`wm_...`) — generate one at
-[wellmarked.io](https://wellmarked.io).
+There are two ways to connect, depending on your host:
+
+- **Remote (hosted, OAuth)** — for Claude.ai and other hosts that support
+  remote MCP servers. No API key to copy; you sign in and authorize in the
+  browser. See [Remote server](#remote-server-hosted--oauth) below.
+- **Local (stdio, API key)** — for Claude Desktop, Claude Code, Cursor, and any
+  host that launches a local server. You supply a `wm_...` key via the
+  environment. Generate one at [wellmarked.io](https://wellmarked.io).
+
+### Remote server (hosted — OAuth)
+
+Add WellMarked as a **custom connector** and point it at:
+
+```
+https://mcp.wellmarked.io/mcp
+```
+
+Your host discovers the authorization server automatically (via
+`/.well-known/oauth-protected-resource`), walks you through signing in to
+WellMarked and approving the connection, and receives a scoped, expiring token —
+no key to paste. The connector can `extract`, `bulk`, and `crawl`; it cannot
+mint or rotate credentials.
+
+In **Claude.ai**: Settings → Connectors → Add custom connector → paste the URL
+above → follow the sign-in and consent prompts.
+
+The remote server speaks MCP over Streamable HTTP and, under the hood, calls the
+same tools as the local server — the tool surface is identical (enforced by the
+parity test in `test/`).
 
 ### Claude Desktop
 
@@ -61,11 +88,25 @@ Any host that launches MCP servers over stdio works — point it at
 
 ## Environment variables
 
+Local (stdio) server:
+
 | Variable | Required | Description |
 | --- | --- | --- |
 | `WELLMARKED_API_KEY` | yes | Your `wm_...` API key. |
 | `WELLMARKED_BASE_URL` | no | Override the API base URL (self-hosted instances). |
 | `WELLMARKED_TIMEOUT_MS` | no | Per-request timeout in ms (default `30000`). |
+
+Remote (Streamable HTTP) server — only if you self-host it (`npm run start:http`):
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `PORT` | no | Listen port (default `3000`; Railway sets it). |
+| `WELLMARKED_BASE_URL` | no | API base URL — also the OAuth authorization server. |
+| `MCP_PUBLIC_URL` | no | This server's public URL, used in the protected-resource metadata. Derived from the request Host if unset. |
+| `WELLMARKED_TIMEOUT_MS` | no | Per-request timeout in ms. |
+
+The remote server takes **no** `WELLMARKED_API_KEY` — each request authenticates
+with its own OAuth bearer token.
 
 ## Develop locally
 
@@ -73,8 +114,10 @@ Any host that launches MCP servers over stdio works — point it at
 npm install
 npm run build        # compile TypeScript to dist/
 npm start            # run the compiled server on stdio
+npm run start:http   # OR run the remote (Streamable HTTP) server
+npm test             # tool-list parity across both entry points
 
-# Inspect it interactively with the MCP Inspector:
+# Inspect the stdio server interactively with the MCP Inspector:
 WELLMARKED_API_KEY=wm_... npx @modelcontextprotocol/inspector node dist/index.js
 ```
 

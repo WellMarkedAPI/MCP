@@ -44,8 +44,10 @@
   "scripts": {
     "build": "rimraf dist && tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "start:http": "node dist/http.js",
     "dev": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test \"test/**/*.test.mjs\"",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

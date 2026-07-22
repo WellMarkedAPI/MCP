@@ -3,4 +3,4 @@
  * Keep SERVER_VERSION in sync with the `version` field in package.json.
  */
 export const SERVER_NAME = "wellmarked-mcp";
-export const SERVER_VERSION = "1.0.0";
+export const SERVER_VERSION = "1.1.0";

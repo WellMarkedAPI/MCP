@@ -93,7 +93,6 @@ Local (stdio) server:
 | Variable | Required | Description |
 | --- | --- | --- |
 | `WELLMARKED_API_KEY` | yes | Your `wm_...` API key. |
-| `WELLMARKED_BASE_URL` | no | Override the API base URL (self-hosted instances). |
 | `WELLMARKED_TIMEOUT_MS` | no | Per-request timeout in ms (default `30000`). |
 
 Remote (Streamable HTTP) server — only if you self-host it (`npm run start:http`):
@@ -101,7 +100,6 @@ Remote (Streamable HTTP) server — only if you self-host it (`npm run start:htt
 | Variable | Required | Description |
 | --- | --- | --- |
 | `PORT` | no | Listen port (default `3000`; Railway sets it). |
-| `WELLMARKED_BASE_URL` | no | API base URL — also the OAuth authorization server. |
 | `MCP_PUBLIC_URL` | no | This server's public URL, used in the protected-resource metadata. Derived from the request Host if unset. |
 | `WELLMARKED_TIMEOUT_MS` | no | Per-request timeout in ms. |
 

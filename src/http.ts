@@ -29,7 +29,6 @@
  * tools are all request/response (no server-initiated streaming to preserve).
  *
  * Environment:
- *   - WELLMARKED_BASE_URL   (optional) — API base URL. Default the public API.
  *   - MCP_PUBLIC_URL        (optional) — this server's public URL, used in the
  *                            protected-resource metadata. Derived from the
  *                            request Host if unset.
@@ -43,7 +42,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 
 import { createServer } from "./server.js";
 
-const API_BASE_URL = (process.env.WELLMARKED_BASE_URL || "https://api.wellmarked.io").replace(/\/+$/, "");
+const API_BASE_URL = "https://api.wellmarked.io";
 const PORT = Number.parseInt(process.env.PORT || "3000", 10);
 
 // The scopes an OAuth connector token carries — the MCP tool surface. Mirrors
@@ -160,7 +159,7 @@ async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<voi
   }
 
   // Stateless: one transport + server per request, keyed on this request's token.
-  const server = createServer({ apiKey: token, baseUrl: API_BASE_URL, timeoutMs: TIMEOUT_MS });
+  const server = createServer({ apiKey: token, timeoutMs: TIMEOUT_MS });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on("close", () => {
     void transport.close();

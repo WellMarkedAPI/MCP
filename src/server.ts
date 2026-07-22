@@ -122,7 +122,8 @@ const formatInputSchema = {
       "Output format. 'markdown' (default) is clean prose; 'json' returns typed " +
         "heading/paragraph/list/code blocks; 'chunks' returns contiguous " +
         "500-token windows ready for embedding; 'html' returns the raw fetched " +
-        "HTML; 'links' returns every http(s) link on the page.",
+        "HTML; 'links' returns every http(s) link on the page. 'json' and " +
+        "'chunks' require a Pro, Growth, or Enterprise plan.",
     ),
 };
 
@@ -259,9 +260,14 @@ function renderSearch(res: SearchResults): string {
     lines.push(`## ${item.title || item.url}  ${flag}`);
     lines.push(item.url);
     if (item.snippet) lines.push(`> ${item.snippet}`);
-    if (item.ok && item.markdown) {
-      lines.push("");
-      lines.push(item.markdown);
+    if (item.ok) {
+      // Format-agnostic: search carries the same format param as extract, so
+      // a chunks/json/html/links result renders through the shared path.
+      const content = renderContent(item);
+      if (content) {
+        lines.push("");
+        lines.push(content);
+      }
     }
   }
   return lines.join("\n");
@@ -479,17 +485,21 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           .boolean()
           .optional()
           .describe("Render JavaScript on each result page before extracting. Default false."),
+        ...policyInputSchema,
+        ...formatInputSchema,
       },
       annotations: {
         readOnlyHint: true,
         openWorldHint: true,
       },
     },
-    async ({ query, num_results, render_js }) => {
+    async ({ query, num_results, render_js, format, allow_domains, deny_patterns, respect_robots }) => {
       try {
         const res = await client.search(query, {
           numResults: num_results,
           renderJs: render_js,
+          format,
+          ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
         return ok(renderSearch(res));
       } catch (err) {

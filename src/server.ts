@@ -127,6 +127,23 @@ const formatInputSchema = {
     ),
 };
 
+// ── Timeout retries ─────────────────────────────────────────────────────────
+// Shared across extract / bulk / crawl. Kept off `search`: its 15s per-result
+// deadline can't absorb a retry, so the API doesn't take one there.
+const retryInputSchema = {
+  retry: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      "Server-side re-attempts when the target times out, each on a fresh " +
+        "connection. Default 0 (one attempt). On the synchronous extract " +
+        "each timed-out attempt takes 20-30s, so prefer bulk for aggressive " +
+        "values.",
+    ),
+};
+
 /**
  * Render whichever content field a result carries into text.
  *
@@ -320,6 +337,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           ),
         ...policyInputSchema,
         ...formatInputSchema,
+        ...retryInputSchema,
       },
       annotations: {
         readOnlyHint: true,
@@ -327,11 +345,12 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         idempotentHint: true,
       },
     },
-    async ({ url, render_js, format, allow_domains, deny_patterns, respect_robots }) => {
+    async ({ url, render_js, format, retry, allow_domains, deny_patterns, respect_robots }) => {
       try {
         const result = await client.extract(url, {
           renderJs: render_js,
           format,
+          retry,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
         return ok(renderExtract(result));
@@ -376,14 +395,16 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           .describe("Max ms to wait when wait=true. Default 300000 (5 min)."),
         ...policyInputSchema,
         ...formatInputSchema,
+        ...retryInputSchema,
       },
       annotations: { openWorldHint: true },
     },
-    async ({ urls, render_js, format, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
+    async ({ urls, render_js, format, retry, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
       try {
         let job = await client.bulk(urls, {
           renderJs: render_js,
           format,
+          retry,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
         if (wait !== false) {
@@ -435,17 +456,29 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           .positive()
           .optional()
           .describe("Max ms to wait when wait=true. Default 300000 (5 min)."),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "Stop the crawl after this many successful pages. Can only " +
+              "narrow the plan's page cap, never widen it.",
+          ),
         ...policyInputSchema,
         ...formatInputSchema,
+        ...retryInputSchema,
       },
       annotations: { openWorldHint: true },
     },
-    async ({ url, depth, render_js, format, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
+    async ({ url, depth, render_js, format, retry, max_pages, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
       try {
         let job: BulkJob | CrawlJob = await client.crawl(url, {
           depth,
           renderJs: render_js,
           format,
+          retry,
+          maxPages: max_pages,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
         if (wait === true) {

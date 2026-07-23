@@ -24,6 +24,11 @@ jobs:
           cache: npm
       # Resolves "wellmarked" from npm (the published JS/TS SDK), not a
       # local file: path — so this builds in an isolated repo checkout.
+      # NOTE: a build/test here fails until the JS SDK is published with any
+      # new surface this server uses (e.g. the `search` tool needs the SDK's
+      # `search()`), which is the correct gate — publish the SDK first.
       - run: npm ci
       - run: npm run typecheck
-      - run: npm run build
+      # `npm test` builds (rimraf + tsc) then runs the stdio/HTTP tool-parity
+      # test, so it covers the deployable dist AND the continuity guarantee.
+      - run: npm test

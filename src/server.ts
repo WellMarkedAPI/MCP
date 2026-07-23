@@ -29,8 +29,10 @@ import {
   WellMarkedError,
   type WellMarkedOptions,
   type BulkJob,
+  type Content,
   type CrawlJob,
   type ExtractResult,
+  type SearchResults,
   type Usage,
 } from "wellmarked";
 
@@ -80,6 +82,126 @@ function iso(d: Date | null): string {
   return d ? d.toISOString() : "—";
 }
 
+// ── Compliance overrides ────────────────────────────────────────────────────
+// Shared across extract / bulk / crawl. These can only NARROW the API key's own
+// policy server-side (add denies, restrict domains, upgrade robots to strict),
+// never widen it — so exposing them to an agent is safe.
+const policyInputSchema = {
+  allow_domains: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Restrict this request to these domains (and their subdomains). Can only " +
+        "narrow the key's own allow-list, never widen it.",
+    ),
+  deny_patterns: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Extra deny globs for this request, matched against the hostname and the " +
+        "full URL. Added to the key's deny list.",
+    ),
+  respect_robots: z
+    .enum(["strict", "lax"])
+    .optional()
+    .describe(
+      "'strict' honors robots.txt on this request (extract/bulk too, not just " +
+        "crawl); can tighten the key's setting but never loosen it.",
+    ),
+};
+
+// ── Output format ───────────────────────────────────────────────────────────
+// Shared across extract / bulk / crawl. Kept off `search`, which always returns
+// markdown — search hands an agent N pages to read, and the other formats serve
+// pipelines that already know which URL they want.
+const formatInputSchema = {
+  format: z
+    .enum(["markdown", "json", "chunks", "html", "links"])
+    .optional()
+    .describe(
+      "Output format. 'markdown' (default) is clean prose; 'json' returns typed " +
+        "heading/paragraph/list/code blocks; 'chunks' returns contiguous " +
+        "500-token windows ready for embedding; 'html' returns the raw fetched " +
+        "HTML; 'links' returns every http(s) link on the page. 'json' and " +
+        "'chunks' require a Pro, Growth, or Enterprise plan.",
+    ),
+};
+
+// ── Timeout retries ─────────────────────────────────────────────────────────
+// Shared across extract / bulk / crawl. Kept off `search`: its 15s per-result
+// deadline can't absorb a retry, so the API doesn't take one there.
+const retryInputSchema = {
+  retry: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      "Server-side re-attempts when the target times out, each on a fresh " +
+        "connection. Default 0 (one attempt). On the synchronous extract " +
+        "each timed-out attempt takes 20-30s, so prefer bulk for aggressive " +
+        "values.",
+    ),
+};
+
+/**
+ * Render whichever content field a result carries into text.
+ *
+ * MCP tools return text, so each non-markdown format needs a legible textual
+ * projection — an agent reading `[object Object]` is strictly worse off than
+ * one reading markdown. Chunks and blocks keep their structure visible
+ * (offsets, block types) because that's the reason the caller asked for them.
+ */
+function renderContent(item: Content): string | null {
+  if (item.markdown !== null) return item.markdown;
+  if (item.html !== null) return item.html;
+  if (item.links !== null) return item.links.join("\n");
+  if (item.blocks !== null) {
+    return item.blocks
+      .map((b) => {
+        const label = b.type === "heading" ? `heading h${b.level ?? 1}` : b.type;
+        return `[${label}] ${b.text}`;
+      })
+      .join("\n\n");
+  }
+  if (item.chunks !== null) {
+    return item.chunks
+      .map((c) => `[tokens ${c.startToken}-${c.endToken}]\n${c.text}`)
+      .join("\n\n");
+  }
+  return null;
+}
+
+/** One line of ROI metrics, when the API reported them. */
+function renderMetrics(item: Content): string | null {
+  const m = item.metrics;
+  if (!m || m.tokensSaved === null) return null;
+  return (
+    `Tokens: ${m.outputTokens} out of ${m.inputTokens} raw ` +
+    `(saved ${m.tokensSaved}, −${m.reductionPct}%)`
+  );
+}
+
+interface PolicyToolArgs {
+  allow_domains?: string[];
+  deny_patterns?: string[];
+  respect_robots?: "strict" | "lax";
+}
+
+/** Map the snake_case tool args to the SDK's camelCase policy options. Unset
+ * fields stay undefined; the SDK omits them so the key's policy is untouched. */
+function toPolicyOptions(a: PolicyToolArgs): {
+  allowDomains?: string[];
+  denyPatterns?: string[];
+  respectRobots?: "strict" | "lax";
+} {
+  return {
+    allowDomains: a.allow_domains,
+    denyPatterns: a.deny_patterns,
+    respectRobots: a.respect_robots,
+  };
+}
+
 // ── Renderers ─────────────────────────────────────────────────────────────────
 // Render SDK objects as text an LLM can consume directly: the Markdown is the
 // payload the agent actually wants, so it goes in verbatim, with a compact
@@ -97,7 +219,9 @@ function renderExtract(r: ExtractResult): string {
   ]
     .filter(Boolean)
     .join("\n");
-  return `${header}\n\n---\n\n${r.markdown}`;
+  const metrics = renderMetrics(r);
+  const full = metrics ? `${header}\n${metrics}` : header;
+  return `${full}\n\n---\n\n${renderContent(r) ?? "(no content)"}`;
 }
 
 function renderJob(job: BulkJob | CrawlJob): string {
@@ -133,9 +257,34 @@ function renderJob(job: BulkJob | CrawlJob): string {
       "depth" in item ? `  (depth ${(item as { depth: number }).depth})` : "";
     const flag = item.ok ? "✓" : `✗ error: ${item.error ?? "unknown"}`;
     lines.push(`## ${item.url}${depth}  ${flag}`);
-    if (item.ok && item.markdown) {
+    const body = item.ok ? renderContent(item) : null;
+    if (body) {
       lines.push("");
-      lines.push(item.markdown);
+      lines.push(body);
+    }
+  }
+  return lines.join("\n");
+}
+
+function renderSearch(res: SearchResults): string {
+  const lines: string[] = [
+    `Search: ${res.query}  (${res.results.length} results)`,
+    `Request ID: ${res.requestId}`,
+  ];
+  for (const item of res.results) {
+    lines.push("");
+    const flag = item.ok ? "✓" : `✗ error: ${item.error ?? "unknown"}`;
+    lines.push(`## ${item.title || item.url}  ${flag}`);
+    lines.push(item.url);
+    if (item.snippet) lines.push(`> ${item.snippet}`);
+    if (item.ok) {
+      // Format-agnostic: search carries the same format param as extract, so
+      // a chunks/json/html/links result renders through the shared path.
+      const content = renderContent(item);
+      if (content) {
+        lines.push("");
+        lines.push(content);
+      }
     }
   }
   return lines.join("\n");
@@ -186,6 +335,9 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
               "Needed for SPA / client-rendered pages. Requires a Pro+ plan " +
               "and the feature enabled on the API instance. Default false.",
           ),
+        ...policyInputSchema,
+        ...formatInputSchema,
+        ...retryInputSchema,
       },
       annotations: {
         readOnlyHint: true,
@@ -193,9 +345,14 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         idempotentHint: true,
       },
     },
-    async ({ url, render_js }) => {
+    async ({ url, render_js, format, retry, allow_domains, deny_patterns, respect_robots }) => {
       try {
-        const result = await client.extract(url, { renderJs: render_js });
+        const result = await client.extract(url, {
+          renderJs: render_js,
+          format,
+          retry,
+          ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
+        });
         return ok(renderExtract(result));
       } catch (err) {
         return toErrorResult(err);
@@ -236,12 +393,20 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           .positive()
           .optional()
           .describe("Max ms to wait when wait=true. Default 300000 (5 min)."),
+        ...policyInputSchema,
+        ...formatInputSchema,
+        ...retryInputSchema,
       },
       annotations: { openWorldHint: true },
     },
-    async ({ urls, render_js, wait, wait_timeout_ms }) => {
+    async ({ urls, render_js, format, retry, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
       try {
-        let job = await client.bulk(urls, { renderJs: render_js });
+        let job = await client.bulk(urls, {
+          renderJs: render_js,
+          format,
+          retry,
+          ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
+        });
         if (wait !== false) {
           job = (await client.waitForJob(job.jobId, {
             timeoutMs: wait_timeout_ms ?? 300_000,
@@ -291,14 +456,30 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           .positive()
           .optional()
           .describe("Max ms to wait when wait=true. Default 300000 (5 min)."),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "Stop the crawl after this many successful pages. Can only " +
+              "narrow the plan's page cap, never widen it.",
+          ),
+        ...policyInputSchema,
+        ...formatInputSchema,
+        ...retryInputSchema,
       },
       annotations: { openWorldHint: true },
     },
-    async ({ url, depth, render_js, wait, wait_timeout_ms }) => {
+    async ({ url, depth, render_js, format, retry, max_pages, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
       try {
         let job: BulkJob | CrawlJob = await client.crawl(url, {
           depth,
           renderJs: render_js,
+          format,
+          retry,
+          maxPages: max_pages,
+          ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
         if (wait === true) {
           job = await client.waitForJob(job.jobId, {
@@ -306,6 +487,54 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           });
         }
         return ok(renderJob(job));
+      } catch (err) {
+        return toErrorResult(err);
+      }
+    },
+  );
+
+  // ── search ─────────────────────────────────────────────────────────────────
+  server.registerTool(
+    "search",
+    {
+      title: "Search the web and extract the results",
+      description:
+        "Search the web for a query and get each result page back as clean " +
+        "Markdown — search plus extraction in one synchronous call, no job to " +
+        "poll. Use this to answer a question from the live web when you don't " +
+        "already have the URLs. Returns up to num_results pages, each with a " +
+        "status (a slow or blocked page comes back as an error item, not a " +
+        "failure of the whole call). Requires a Pro+ plan.",
+      inputSchema: {
+        query: z.string().min(1).describe("The search query."),
+        num_results: z
+          .number()
+          .int()
+          .min(1)
+          .max(10)
+          .optional()
+          .describe("How many results to fetch + extract (1–10). Default 5."),
+        render_js: z
+          .boolean()
+          .optional()
+          .describe("Render JavaScript on each result page before extracting. Default false."),
+        ...policyInputSchema,
+        ...formatInputSchema,
+      },
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: true,
+      },
+    },
+    async ({ query, num_results, render_js, format, allow_domains, deny_patterns, respect_robots }) => {
+      try {
+        const res = await client.search(query, {
+          numResults: num_results,
+          renderJs: render_js,
+          format,
+          ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
+        });
+        return ok(renderSearch(res));
       } catch (err) {
         return toErrorResult(err);
       }

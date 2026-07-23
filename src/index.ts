@@ -12,7 +12,6 @@
  *
  * Environment:
  *   - WELLMARKED_API_KEY   (required) — your `wm_...` key.
- *   - WELLMARKED_BASE_URL  (optional) — override the API base URL.
  *   - WELLMARKED_TIMEOUT_MS(optional) — per-request timeout in ms.
  */
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -31,7 +30,6 @@ async function main(): Promise<void> {
   try {
     server = createServer({
       apiKey: process.env.WELLMARKED_API_KEY,
-      baseUrl: process.env.WELLMARKED_BASE_URL,
       timeoutMs: resolveTimeout(),
     });
   } catch (err) {

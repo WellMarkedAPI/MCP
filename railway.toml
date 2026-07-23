@@ -1,0 +1,18 @@
+# The remote MCP server runs as its OWN Railway service (Phase 7) — separate
+# from the API and website. It's a stateless Node process; Nixpacks detects the
+# package.json, installs, and runs `npm run build`, then the startCommand below.
+#
+# The default `npm start` is the STDIO entry point (dist/index.js) for local
+# hosts — wrong for a hosted service — so the startCommand overrides it with the
+# Streamable HTTP entry point. Railway injects PORT; http.ts reads it.
+#
+# Required env: none. Optional: WELLMARKED_BASE_URL (defaults to the public API),
+# MCP_PUBLIC_URL (defaults to the request Host), WELLMARKED_TIMEOUT_MS.
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "npm run start:http"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"

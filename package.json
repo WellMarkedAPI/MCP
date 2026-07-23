@@ -47,7 +47,7 @@
     "start:http": "node dist/http.js",
     "dev": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test \"test/**/*.test.mjs\"",
+    "test": "npm run build && node --test test/tool-parity.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

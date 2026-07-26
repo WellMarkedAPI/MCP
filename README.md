@@ -28,6 +28,32 @@ overrides (`allow_domains` / `deny_patterns` / `respect_robots`); `extract`,
 `bulk`, and `crawl` also accept a `retry` count for target timeouts, and
 `crawl` a `max_pages` budget.
 
+### Structured output
+
+Every tool declares an `outputSchema` and returns `structuredContent` — typed
+JSON, so an agent reads `status`, `completed`, `ok`, or `tokensSaved` as real
+fields instead of pattern-matching them out of a rendered sentence:
+
+```json
+{
+  "kind": "crawl",
+  "jobId": "job_abc",
+  "status": "done",
+  "total": 12,
+  "completed": 12,
+  "done": true,
+  "truncated": false,
+  "results": [
+    { "url": "https://example.com/a", "depth": 1, "ok": true, "markdown": "# A" },
+    { "url": "https://example.com/b", "depth": 1, "ok": false, "error": "target_timeout" }
+  ]
+}
+```
+
+The human-readable rendering is still returned in the usual text block, so
+hosts that don't yet read structured output behave exactly as before. Errors
+stay text-only and carry the API's stable error `code`.
+
 > **Not exposed as tools:** API-key rotation (`/keys/rotate`) and webhook-secret
 > rotation (`/webhook/rotate`). Both are destructive and irreversible — the old
 > credential dies the instant the call returns, with no recovery flow — which is

@@ -196,7 +196,15 @@ test("extract returns typed structured content alongside the text block", async 
 });
 
 test("get_job returns job state as real JSON types, not prose", async () => {
-  const restore = stubFetch({ "GET /bulk/job_abc": BULK_BODY });
+  // Both routes are stubbed on purpose. Which URL the SDK polls is its
+  // implementation detail — it moved from /bulk/{id} to the kind-agnostic
+  // /jobs/{id} — and this test is about the MCP layer's structured output,
+  // not the SDK's routing. Pinning one path would make it fail on an SDK
+  // upgrade that changed nothing here.
+  const restore = stubFetch({
+    "GET /jobs/job_abc": BULK_BODY,
+    "GET /bulk/job_abc": BULK_BODY,
+  });
   try {
     const res = await callTool("get_job", { job_id: "job_abc" });
     const sc = res.structuredContent;
@@ -225,8 +233,10 @@ test("get_job returns job state as real JSON types, not prose", async () => {
 test("a finished job with no results still validates", async () => {
   // The empty-results branch renders "(no results)" as text; the structured
   // side must stay a real empty array rather than that string.
+  const EMPTY = { ...BULK_BODY, job_id: "job_empty", total: 0, completed: 0, results: [] };
   const restore = stubFetch({
-    "GET /bulk/job_empty": { ...BULK_BODY, job_id: "job_empty", total: 0, completed: 0, results: [] },
+    "GET /jobs/job_empty": EMPTY,
+    "GET /bulk/job_empty": EMPTY,
   });
   try {
     const res = await callTool("get_job", { job_id: "job_empty" });

@@ -6,7 +6,12 @@
  * top of the official `wellmarked` JavaScript SDK — the SDK owns auth,
  * transport, retries, typed errors, and polymorphic job polling, so this
  * layer only translates MCP tool calls into SDK calls and renders the
- * results back as agent-readable text.
+ * results back to the agent.
+ *
+ * Every tool declares an `outputSchema` and returns `structuredContent`:
+ * typed JSON an agent reads fields off directly, instead of pattern-matching
+ * `status` or `12/50` out of a rendered sentence. The text rendering is still
+ * sent alongside it for clients that predate structured output — see `ok()`.
  *
  * Tools:
  *   - extract        — one URL → clean Markdown.
@@ -38,18 +43,45 @@ import {
 
 import { SERVER_NAME, SERVER_VERSION } from "./version.js";
 
-/** Text-only tool result helpers. */
+/**
+ * Tool result helpers.
+ *
+ * Every success carries the payload TWICE, on purpose:
+ *   - `structuredContent` — typed JSON. This is what an agent should read
+ *     fields off (`status`, `completed`, `ok`, `tokensSaved`), instead of
+ *     pattern-matching them out of a rendered sentence.
+ *   - the text block — the same data rendered for humans and for clients that
+ *     predate structured output. The spec asks a tool that returns structured
+ *     content to also return a functionally equivalent unstructured copy, and
+ *     dropping it would silently blank the tool on older clients.
+ *
+ * Errors stay text-only: the SDK skips output validation when `isError` is
+ * set, and a failure has no typed shape beyond the code already in the message.
+ */
 type ToolResult = {
   content: { type: "text"; text: string }[];
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
 
-function ok(text: string): ToolResult {
-  return { content: [{ type: "text", text }] };
+function ok(text: string, structuredContent: Record<string, unknown>): ToolResult {
+  return { content: [{ type: "text", text }], structuredContent };
 }
 
 function fail(text: string): ToolResult {
   return { content: [{ type: "text", text }], isError: true };
+}
+
+/**
+ * Render an SDK object exactly as it will travel on the wire.
+ *
+ * Two things this fixes, both of which would fail output validation if the SDK
+ * object were passed through as-is: `Date` fields (`createdAt`, `finishedAt`,
+ * `retrievedAt`) become ISO strings, and the SDK's computed getters (`ok`,
+ * `done`) materialize as plain boolean fields.
+ */
+function jsonify(value: unknown): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
 
 /**
@@ -300,6 +332,129 @@ function renderUsage(u: Usage): string {
   ].join("\n");
 }
 
+// ── Output schemas ────────────────────────────────────────────────────────────
+// These mirror the SDK's response types (see `wellmarked`'s models.d.ts) and are
+// published to clients as each tool's `outputSchema`, so an agent knows the
+// shape of `structuredContent` before it ever calls the tool.
+//
+// They are deliberately a projection of the SDK types rather than a
+// generated-from-source artifact: the SDK's types are TypeScript interfaces,
+// which don't survive to runtime, and Zod is what the MCP SDK validates
+// against. Drift is caught by test/structured-output.test.mjs, which asserts
+// every tool's real result parses against its declared schema.
+
+/** Content fields shared by every extraction result. Exactly one is populated,
+ *  per the request's `format`; the rest are null. */
+const contentOutputShape = {
+  markdown: z.string().nullable(),
+  blocks: z
+    .array(
+      z.object({
+        type: z.enum(["heading", "paragraph", "list", "code"]),
+        text: z.string(),
+        level: z.number().int().nullable(),
+      }),
+    )
+    .nullable(),
+  chunks: z
+    .array(
+      z.object({
+        text: z.string(),
+        startToken: z.number().int(),
+        endToken: z.number().int(),
+      }),
+    )
+    .nullable(),
+  html: z.string().nullable(),
+  links: z.array(z.string()).nullable(),
+  metrics: z
+    .object({
+      contentBytes: z.number(),
+      inputTokens: z.number().nullable(),
+      outputTokens: z.number().nullable(),
+      tokensSaved: z.number().nullable(),
+      reductionPct: z.number().nullable(),
+    })
+    .nullable(),
+};
+
+const metadataSchema = z.object({
+  url: z.string(),
+  title: z.string().nullable(),
+  author: z.string().nullable(),
+  date: z.string().nullable(),
+  retrievedAt: z.string().nullable().describe("ISO 8601 timestamp."),
+});
+
+const extractOutputShape = {
+  ...contentOutputShape,
+  metadata: metadataSchema,
+  requestId: z.string(),
+};
+
+/** One bulk item or crawl page. `depth` is crawl-only, hence optional. */
+const jobItemSchema = z.object({
+  ...contentOutputShape,
+  url: z.string(),
+  metadata: metadataSchema.nullable(),
+  error: z
+    .string()
+    .nullable()
+    .describe("Stable API error code (e.g. target_timeout), never a message."),
+  ok: z.boolean(),
+  depth: z.number().int().optional().describe("Crawl only: BFS depth from the root."),
+});
+
+/** One schema for both job kinds — `bulk`, `crawl`, `get_job`, and
+ *  `wait_for_job` all return a BulkJob or a CrawlJob, and `get_job` is
+ *  polymorphic by design. Crawl-only fields are optional; read `kind` to
+ *  discriminate. */
+const jobOutputShape = {
+  kind: z.enum(["bulk", "crawl"]),
+  jobId: z.string(),
+  status: z.enum(["queued", "processing", "done"]),
+  total: z.number().int(),
+  completed: z.number().int(),
+  done: z.boolean().describe("True when status === 'done'."),
+  results: z.array(jobItemSchema),
+  createdAt: z.string().nullable().describe("ISO 8601 timestamp."),
+  finishedAt: z.string().nullable().describe("ISO 8601 timestamp."),
+  webhookSigningSecret: z
+    .string()
+    .nullable()
+    .describe("Shown once, on the submission that minted it. Null on polls."),
+  truncated: z.boolean().optional().describe("Crawl only."),
+  truncatedReason: z
+    .enum(["page_cap_reached", "quota_exhausted"])
+    .nullable()
+    .optional()
+    .describe("Crawl only."),
+};
+
+const searchOutputShape = {
+  query: z.string(),
+  requestId: z.string(),
+  results: z.array(
+    z.object({
+      ...contentOutputShape,
+      url: z.string(),
+      status: z.enum(["ok", "error"]),
+      title: z.string().nullable(),
+      snippet: z.string().nullable(),
+      error: z.string().nullable(),
+      ok: z.boolean(),
+    }),
+  ),
+};
+
+const usageOutputShape = {
+  plan: z.string(),
+  period: z.string(),
+  used: z.number(),
+  limit: z.number(),
+  remaining: z.number(),
+};
+
 /**
  * Build a configured MCP server. The `WellMarked` client is created once and
  * shared across all tool invocations for the life of the process.
@@ -339,6 +494,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         ...formatInputSchema,
         ...retryInputSchema,
       },
+      outputSchema: extractOutputShape,
       annotations: {
         readOnlyHint: true,
         openWorldHint: true,
@@ -353,7 +509,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           retry,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
-        return ok(renderExtract(result));
+        return ok(renderExtract(result), jsonify(result));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -397,6 +553,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         ...formatInputSchema,
         ...retryInputSchema,
       },
+      outputSchema: jobOutputShape,
       annotations: { openWorldHint: true },
     },
     async ({ urls, render_js, format, retry, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
@@ -412,7 +569,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
             timeoutMs: wait_timeout_ms ?? 300_000,
           })) as BulkJob;
         }
-        return ok(renderJob(job));
+        return ok(renderJob(job), jsonify(job));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -469,6 +626,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         ...formatInputSchema,
         ...retryInputSchema,
       },
+      outputSchema: jobOutputShape,
       annotations: { openWorldHint: true },
     },
     async ({ url, depth, render_js, format, retry, max_pages, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
@@ -486,7 +644,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
             timeoutMs: wait_timeout_ms ?? 300_000,
           });
         }
-        return ok(renderJob(job));
+        return ok(renderJob(job), jsonify(job));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -521,6 +679,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         ...policyInputSchema,
         ...formatInputSchema,
       },
+      outputSchema: searchOutputShape,
       annotations: {
         readOnlyHint: true,
         openWorldHint: true,
@@ -534,7 +693,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           format,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
-        return ok(renderSearch(res));
+        return ok(renderSearch(res), jsonify(res));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -553,6 +712,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
       inputSchema: {
         job_id: z.string().describe("The job id returned by bulk or crawl."),
       },
+      outputSchema: jobOutputShape,
       annotations: {
         readOnlyHint: true,
         openWorldHint: true,
@@ -562,7 +722,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
     async ({ job_id }) => {
       try {
         const job = await client.getJob(job_id);
-        return ok(renderJob(job));
+        return ok(renderJob(job), jsonify(job));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -594,6 +754,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           .optional()
           .describe("Ms between status polls. Default 2000."),
       },
+      outputSchema: jobOutputShape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ job_id, timeout_ms, poll_interval_ms }) => {
@@ -602,7 +763,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           timeoutMs: timeout_ms ?? 300_000,
           pollIntervalMs: poll_interval_ms ?? 2_000,
         });
-        return ok(renderJob(job));
+        return ok(renderJob(job), jsonify(job));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -620,6 +781,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         "the quota. Check this before a large bulk or crawl to avoid " +
         "hitting the monthly limit mid-job.",
       inputSchema: {},
+      outputSchema: usageOutputShape,
       annotations: {
         readOnlyHint: true,
         openWorldHint: true,
@@ -629,7 +791,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
     async () => {
       try {
         const usage = await client.getUsage();
-        return ok(renderUsage(usage));
+        return ok(renderUsage(usage), jsonify(usage));
       } catch (err) {
         return toErrorResult(err);
       }

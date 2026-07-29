@@ -5,13 +5,14 @@
  * Claude Code, Cursor, etc.) as a set of tools. This is a thin adapter on
  * top of the official `wellmarked` JavaScript SDK — the SDK owns auth,
  * transport, retries, typed errors, and polymorphic job polling, so this
- * layer only translates MCP tool calls into SDK calls and renders the
- * results back to the agent.
+ * layer only translates MCP tool calls into SDK calls and hands the results
+ * back to the agent.
  *
- * Every tool declares an `outputSchema` and returns `structuredContent`:
- * typed JSON an agent reads fields off directly, instead of pattern-matching
- * `status` or `12/50` out of a rendered sentence. The text rendering is still
- * sent alongside it for clients that predate structured output — see `ok()`.
+ * Every tool declares an `outputSchema` and returns the payload as typed JSON
+ * in `structuredContent` — nothing is flattened into prose. An agent reads
+ * `status`, `completed`, `ok` or `tokensSaved` off a field; it never
+ * pattern-matches `12/50` out of a sentence or reads `—` as null. A successful
+ * result's `content` holds only a pointer to `structuredContent`; see `ok()`.
  *
  * Tools:
  *   - extract        — one URL → clean Markdown.
@@ -34,11 +35,7 @@ import {
   WellMarkedError,
   type WellMarkedOptions,
   type BulkJob,
-  type Content,
   type CrawlJob,
-  type ExtractResult,
-  type SearchResults,
-  type Usage,
 } from "wellmarked";
 
 import { SERVER_NAME, SERVER_VERSION } from "./version.js";
@@ -46,26 +43,33 @@ import { SERVER_NAME, SERVER_VERSION } from "./version.js";
 /**
  * Tool result helpers.
  *
- * Every success carries the payload TWICE, on purpose:
- *   - `structuredContent` — typed JSON. This is what an agent should read
- *     fields off (`status`, `completed`, `ok`, `tokensSaved`), instead of
- *     pattern-matching them out of a rendered sentence.
- *   - the text block — the same data rendered for humans and for clients that
- *     predate structured output. The spec asks a tool that returns structured
- *     content to also return a functionally equivalent unstructured copy, and
- *     dropping it would silently blank the tool on older clients.
+ * A success returns the payload ONCE, as typed JSON in `structuredContent`.
+ * The key-value pairs travel as key-value pairs — an agent reads `status`,
+ * `completed`, `ok` or `tokensSaved` off a field instead of pattern-matching
+ * them out of a rendered sentence.
  *
- * Errors stay text-only: the SDK skips output validation when `isError` is
- * set, and a failure has no typed shape beyond the code already in the message.
+ * `content` carries a fixed one-line POINTER, never the data. The spec suggests
+ * serializing the payload into a text block for hosts that predate structured
+ * output, but that doubles the wire size on every call to send data the agent
+ * already has in a better form. The signpost costs 52 bytes on the wire and
+ * means a reader that goes straight for `content` — a host, or a model that
+ * learned the old shape — is told where to look instead of seeing an empty
+ * result and concluding the tool returned nothing.
+ *
+ * Errors are the one case that carries real text: the SDK skips output
+ * validation when `isError` is set, and a failure has no typed shape beyond
+ * the code already in the message.
  */
+const CONTENT_POINTER = '[See "structuredContent"]';
+
 type ToolResult = {
   content: { type: "text"; text: string }[];
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
 
-function ok(text: string, structuredContent: Record<string, unknown>): ToolResult {
-  return { content: [{ type: "text", text }], structuredContent };
+function ok(structuredContent: Record<string, unknown>): ToolResult {
+  return { content: [{ type: "text", text: CONTENT_POINTER }], structuredContent };
 }
 
 function fail(text: string): ToolResult {
@@ -107,11 +111,6 @@ function toErrorResult(err: unknown): ToolResult {
   }
   const message = err instanceof Error ? err.message : String(err);
   return fail(`Unexpected error: ${message}`);
-}
-
-/** `Date | null` → ISO string or "—". */
-function iso(d: Date | null): string {
-  return d ? d.toISOString() : "—";
 }
 
 // ── Compliance overrides ────────────────────────────────────────────────────
@@ -176,44 +175,6 @@ const retryInputSchema = {
     ),
 };
 
-/**
- * Render whichever content field a result carries into text.
- *
- * MCP tools return text, so each non-markdown format needs a legible textual
- * projection — an agent reading `[object Object]` is strictly worse off than
- * one reading markdown. Chunks and blocks keep their structure visible
- * (offsets, block types) because that's the reason the caller asked for them.
- */
-function renderContent(item: Content): string | null {
-  if (item.markdown !== null) return item.markdown;
-  if (item.html !== null) return item.html;
-  if (item.links !== null) return item.links.join("\n");
-  if (item.blocks !== null) {
-    return item.blocks
-      .map((b) => {
-        const label = b.type === "heading" ? `heading h${b.level ?? 1}` : b.type;
-        return `[${label}] ${b.text}`;
-      })
-      .join("\n\n");
-  }
-  if (item.chunks !== null) {
-    return item.chunks
-      .map((c) => `[tokens ${c.startToken}-${c.endToken}]\n${c.text}`)
-      .join("\n\n");
-  }
-  return null;
-}
-
-/** One line of ROI metrics, when the API reported them. */
-function renderMetrics(item: Content): string | null {
-  const m = item.metrics;
-  if (!m || m.tokensSaved === null) return null;
-  return (
-    `Tokens: ${m.outputTokens} out of ${m.inputTokens} raw ` +
-    `(saved ${m.tokensSaved}, −${m.reductionPct}%)`
-  );
-}
-
 interface PolicyToolArgs {
   allow_domains?: string[];
   deny_patterns?: string[];
@@ -234,103 +195,6 @@ function toPolicyOptions(a: PolicyToolArgs): {
   };
 }
 
-// ── Renderers ─────────────────────────────────────────────────────────────────
-// Render SDK objects as text an LLM can consume directly: the Markdown is the
-// payload the agent actually wants, so it goes in verbatim, with a compact
-// metadata header for context.
-
-function renderExtract(r: ExtractResult): string {
-  const m = r.metadata;
-  const header = [
-    `URL: ${m.url}`,
-    m.title ? `Title: ${m.title}` : null,
-    m.author ? `Author: ${m.author}` : null,
-    m.date ? `Published: ${m.date}` : null,
-    `Retrieved: ${iso(m.retrievedAt)}`,
-    `Request ID: ${r.requestId}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const metrics = renderMetrics(r);
-  const full = metrics ? `${header}\n${metrics}` : header;
-  return `${full}\n\n---\n\n${renderContent(r) ?? "(no content)"}`;
-}
-
-function renderJob(job: BulkJob | CrawlJob): string {
-  const lines: string[] = [];
-  lines.push(
-    `Job ${job.jobId} [${job.kind}] — status: ${job.status} ` +
-      `(${job.completed}/${job.total})`,
-  );
-  lines.push(`Created: ${iso(job.createdAt)} | Finished: ${iso(job.finishedAt)}`);
-  if (job.kind === "crawl" && job.truncated) {
-    lines.push(`⚠ Truncated: ${job.truncatedReason ?? "unknown reason"}`);
-  }
-  if (job.webhookSigningSecret) {
-    lines.push(
-      `Webhook signing secret (shown ONCE — store it now): ` +
-        `${job.webhookSigningSecret}`,
-    );
-  }
-
-  if (job.results.length === 0) {
-    lines.push("");
-    lines.push(
-      job.done
-        ? "(no results)"
-        : "(no results yet — job still running; poll get_job or use wait_for_job)",
-    );
-    return lines.join("\n");
-  }
-
-  for (const item of job.results) {
-    lines.push("");
-    const depth =
-      "depth" in item ? `  (depth ${(item as { depth: number }).depth})` : "";
-    const flag = item.ok ? "✓" : `✗ error: ${item.error ?? "unknown"}`;
-    lines.push(`## ${item.url}${depth}  ${flag}`);
-    const body = item.ok ? renderContent(item) : null;
-    if (body) {
-      lines.push("");
-      lines.push(body);
-    }
-  }
-  return lines.join("\n");
-}
-
-function renderSearch(res: SearchResults): string {
-  const lines: string[] = [
-    `Search: ${res.query}  (${res.results.length} results)`,
-    `Request ID: ${res.requestId}`,
-  ];
-  for (const item of res.results) {
-    lines.push("");
-    const flag = item.ok ? "✓" : `✗ error: ${item.error ?? "unknown"}`;
-    lines.push(`## ${item.title || item.url}  ${flag}`);
-    lines.push(item.url);
-    if (item.snippet) lines.push(`> ${item.snippet}`);
-    if (item.ok) {
-      // Format-agnostic: search carries the same format param as extract, so
-      // a chunks/json/html/links result renders through the shared path.
-      const content = renderContent(item);
-      if (content) {
-        lines.push("");
-        lines.push(content);
-      }
-    }
-  }
-  return lines.join("\n");
-}
-
-function renderUsage(u: Usage): string {
-  const pct = u.limit > 0 ? Math.round((u.used / u.limit) * 100) : 0;
-  return [
-    `Plan: ${u.plan}`,
-    `Period: ${u.period}`,
-    `Used: ${u.used} / ${u.limit} (${pct}%)`,
-    `Remaining: ${u.remaining}`,
-  ].join("\n");
-}
 
 // ── Output schemas ────────────────────────────────────────────────────────────
 // These mirror the SDK's response types (see `wellmarked`'s models.d.ts) and are
@@ -509,7 +373,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           retry,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
-        return ok(renderExtract(result), jsonify(result));
+        return ok(jsonify(result));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -569,7 +433,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
             timeoutMs: wait_timeout_ms ?? 300_000,
           })) as BulkJob;
         }
-        return ok(renderJob(job), jsonify(job));
+        return ok(jsonify(job));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -644,7 +508,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
             timeoutMs: wait_timeout_ms ?? 300_000,
           });
         }
-        return ok(renderJob(job), jsonify(job));
+        return ok(jsonify(job));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -662,16 +526,24 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         "poll. Use this to answer a question from the live web when you don't " +
         "already have the URLs. Returns up to num_results pages, each with a " +
         "status (a slow or blocked page comes back as an error item, not a " +
-        "failure of the whole call). Requires a Pro+ plan.",
+        "failure of the whole call). Available on every plan; the plan caps how " +
+        "many results one search may return.",
       inputSchema: {
         query: z.string().min(1).describe("The search query."),
+        // No upper bound here on purpose. The cap is the caller's PLAN, which
+        // this server can't see — bounding it locally would reject a number
+        // that's perfectly valid on a bigger plan, and would do it with a
+        // schema error instead of the API's 422 naming the actual cap.
         num_results: z
           .number()
           .int()
           .min(1)
-          .max(10)
           .optional()
-          .describe("How many results to fetch + extract (1–10). Default 5."),
+          .describe(
+            "How many results to fetch + extract. Default 5. Capped by plan: " +
+              "Free 5, Pro 10, Growth 50, Enterprise uncapped. Asking for more " +
+              "than your plan allows returns search_cap_exceeded.",
+          ),
         render_js: z
           .boolean()
           .optional()
@@ -693,7 +565,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           format,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
-        return ok(renderSearch(res), jsonify(res));
+        return ok(jsonify(res));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -722,7 +594,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
     async ({ job_id }) => {
       try {
         const job = await client.getJob(job_id);
-        return ok(renderJob(job), jsonify(job));
+        return ok(jsonify(job));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -763,7 +635,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           timeoutMs: timeout_ms ?? 300_000,
           pollIntervalMs: poll_interval_ms ?? 2_000,
         });
-        return ok(renderJob(job), jsonify(job));
+        return ok(jsonify(job));
       } catch (err) {
         return toErrorResult(err);
       }
@@ -791,7 +663,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
     async () => {
       try {
         const usage = await client.getUsage();
-        return ok(renderUsage(usage), jsonify(usage));
+        return ok(jsonify(usage));
       } catch (err) {
         return toErrorResult(err);
       }

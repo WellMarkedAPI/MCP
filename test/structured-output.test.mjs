@@ -1,9 +1,11 @@
-// Structured tool output: every tool returns typed JSON, not prose to parse.
+// Structured tool output: every tool returns typed JSON, and ONLY typed JSON.
 //
 // The thing under test is the seam an agent actually consumes. Before this,
 // `get_job` handed a model `status: running (12/50)` inside a sentence and the
 // model had to pattern-match `status`, split `12/50`, and read `—` as null.
-// Now the same call carries `structuredContent` with real JSON types.
+// Now the same call carries `structuredContent` with real JSON types, and the
+// rendered prose is gone entirely — `content` is `[]` on every success, so
+// there is no second, lossier copy of the payload for a model to read instead.
 //
 // The stub sits at `globalThis.fetch`, NOT at the client methods, so each test
 // exercises the whole chain: canned API JSON → the real SDK parser (snake_case
@@ -167,9 +169,55 @@ test("the advertised job schema types the fields an agent branches on", async ()
   assert.equal(props.done.type, "boolean");
 });
 
+test("every tool puts the payload in structuredContent and a pointer in content", async () => {
+  // The whole point of the change: a result is key-value pairs, not a document.
+  // `content` must hold the pointer and NOTHING else — an exact match catches
+  // both regressions that matter: the payload leaking back into a text block,
+  // and the pointer going missing so a `content`-only reader sees an empty
+  // result and concludes the tool returned nothing.
+  //
+  // The literal is hardcoded rather than imported from the server: this pins
+  // the string that actually goes on the wire, so a typo in the constant is a
+  // failure instead of something both sides agree on.
+  //
+  // Asserted across every tool rather than one, because a single `ok()` helper
+  // is easy to bypass by hand-rolling a result in one handler.
+  const cases = [
+    ["extract", { url: "https://example.com/a" }, { "POST /extract": EXTRACT_BODY }],
+    ["search", { query: "q" }, { "POST /search": SEARCH_BODY }],
+    ["get_usage", {}, { "GET /usage": USAGE_BODY }],
+    ["bulk", { urls: ["https://example.com/a"], wait: false }, { "POST /bulk": BULK_BODY }],
+    ["crawl", { url: "https://example.com", depth: 1, wait: false }, { "POST /crawl": CRAWL_BODY }],
+    // Both job routes are stubbed on purpose — which URL the SDK polls is its
+    // implementation detail (it moved from /bulk/{id} to the kind-agnostic
+    // /jobs/{id}), and this test is about result SHAPE, not SDK routing.
+    // Pinning one path makes the test pass against a local SDK checkout and
+    // fail in CI against the published one, which is exactly what happened.
+    ["get_job", { job_id: "job_abc" }, { "GET /jobs/job_abc": BULK_BODY, "GET /bulk/job_abc": BULK_BODY }],
+    ["wait_for_job", { job_id: "job_abc" }, { "GET /jobs/job_abc": BULK_BODY, "GET /bulk/job_abc": BULK_BODY }],
+  ];
+
+  for (const [name, args, routes] of cases) {
+    const restore = stubFetch(routes);
+    try {
+      const res = await callTool(name, args);
+      assert.notEqual(res.isError, true, `${name} errored: ${res.content?.[0]?.text}`);
+      assert.deepEqual(
+        res.content,
+        [{ type: "text", text: '[See "structuredContent"]' }],
+        `${name} must carry the pointer and nothing else`,
+      );
+      assert.ok(res.structuredContent, `${name} returned no structuredContent`);
+      assert.equal(typeof res.structuredContent, "object");
+    } finally {
+      restore();
+    }
+  }
+});
+
 // ── Payloads ─────────────────────────────────────────────────────────────────
 
-test("extract returns typed structured content alongside the text block", async () => {
+test("extract returns the payload as typed fields, not a rendered document", async () => {
   const restore = stubFetch({ "POST /extract": EXTRACT_BODY });
   try {
     const res = await callTool("extract", { url: "https://example.com/a" });
@@ -186,9 +234,9 @@ test("extract returns typed structured content alongside the text block", async 
     assert.equal(sc.metrics.tokensSaved, 4600);
     assert.equal(typeof sc.metrics.reductionPct, "number");
 
-    // Back-compat: clients that ignore structuredContent still get the render.
-    assert.equal(res.content[0].type, "text");
-    assert.match(res.content[0].text, /Body text\./);
+    // The payload travels ONCE. `content` is a pointer, not a prose copy, and
+    // the markdown lives in a field rather than inside a rendered document.
+    assert.deepEqual(res.content, [{ type: "text", text: '[See "structuredContent"]' }]);
     assert.notEqual(res.isError, true);
   } finally {
     restore();
@@ -297,6 +345,34 @@ test("get_usage returns numbers, not a formatted percentage line", async () => {
     });
   } finally {
     restore();
+  }
+});
+
+// ── Input bounds ─────────────────────────────────────────────────────────────
+// Lives here because this file already owns the fetch stub, which is the only
+// way to prove a value survived the whole chain rather than being rejected at
+// the tool boundary.
+
+test("num_results is not bounded locally, so a big-plan count reaches the API", async () => {
+  // `num_results` used to carry .max(10) in the tool's inputSchema. A Growth
+  // caller entitled to 50 got a zod rejection from THIS server and the API
+  // never saw the request — so the 422 that names the real plan cap could
+  // never be returned. The cap lives on the plan, which this server can't see.
+  let sentBody;
+  const previous = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    sentBody = JSON.parse(init.body);
+    return new Response(JSON.stringify({ ...SEARCH_BODY, results: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const res = await callTool("search", { query: "q", num_results: 50 });
+    assert.notEqual(res.isError, true, "50 must not be rejected at the tool boundary");
+    assert.equal(sentBody.num_results, 50);
+  } finally {
+    globalThis.fetch = previous;
   }
 });
 

@@ -17,7 +17,7 @@ hints, and polymorphic job polling.
 | `extract` | Fetch one URL and return its main content as clean Markdown + metadata. |
 | `bulk` | Submit many URLs for concurrent extraction (Pro+). Blocks for results by default. |
 | `crawl` | Crawl a site BFS from a root URL to a given depth (Pro+). Returns an async job. |
-| `search` | Search the web and return each result page as clean Markdown, in one call (Pro+). |
+| `search` | Search the web and return each result page as clean Markdown, in one call. Available on every plan; the plan caps the result count (Free 5 · Pro 10 · Growth 50 · Enterprise uncapped). |
 | `get_job` | Poll a bulk/crawl job once by id. |
 | `wait_for_job` | Block until a job finishes, then return all results. |
 | `get_usage` | Report current billing-period quota (plan, used, limit, remaining). |
@@ -30,9 +30,10 @@ overrides (`allow_domains` / `deny_patterns` / `respect_robots`); `extract`,
 
 ### Structured output
 
-Every tool declares an `outputSchema` and returns `structuredContent` — typed
-JSON, so an agent reads `status`, `completed`, `ok`, or `tokensSaved` as real
-fields instead of pattern-matching them out of a rendered sentence:
+Every tool declares an `outputSchema` and returns the payload as typed JSON in
+`structuredContent` — and nothing else. An agent reads `status`, `completed`,
+`ok`, or `tokensSaved` as real fields instead of pattern-matching them out of a
+rendered sentence:
 
 ```json
 {
@@ -50,9 +51,25 @@ fields instead of pattern-matching them out of a rendered sentence:
 }
 ```
 
-The human-readable rendering is still returned in the usual text block, so
-hosts that don't yet read structured output behave exactly as before. Errors
-stay text-only and carry the API's stable error `code`.
+On success, `content` holds one fixed line and never the data:
+
+```json
+{ "content": [{ "type": "text", "text": "[See \"structuredContent\"]" }] }
+```
+
+There is no prose rendering of the result. A payload made of key-value pairs
+travels as key-value pairs, and flattening it into a document is exactly the
+parsing burden this server exists to remove. Sending it once rather than twice
+also halves the wire size.
+
+The MCP spec suggests serializing the payload into the text block for hosts
+that predate structured output. We don't — that pays double on every call to
+send data the agent already has in a better form. The pointer costs 52 bytes on
+the wire and means anything reading `content` first is told where to look,
+instead of seeing an empty result and concluding the tool returned nothing.
+
+Errors are the exception and carry real text — a failure has no typed shape
+beyond the API's stable error `code`, which is already in the message.
 
 > **Not exposed as tools:** API-key rotation (`/keys/rotate`) and webhook-secret
 > rotation (`/webhook/rotate`). Both are destructive and irreversible — the old

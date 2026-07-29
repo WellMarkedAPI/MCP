@@ -64,9 +64,9 @@ also halves the wire size.
 
 The MCP spec suggests serializing the payload into the text block for hosts
 that predate structured output. We don't — that pays double on every call to
-send data the agent already has in a better form. The pointer costs ~26 bytes
-and means anything reading `content` first is told where to look, instead of
-seeing an empty result and concluding the tool returned nothing.
+send data the agent already has in a better form. The pointer costs 52 bytes on
+the wire and means anything reading `content` first is told where to look,
+instead of seeing an empty result and concluding the tool returned nothing.
 
 Errors are the exception and carry real text — a failure has no typed shape
 beyond the API's stable error `code`, which is already in the message.

@@ -51,10 +51,10 @@ import { SERVER_NAME, SERVER_VERSION } from "./version.js";
  * `content` carries a fixed one-line POINTER, never the data. The spec suggests
  * serializing the payload into a text block for hosts that predate structured
  * output, but that doubles the wire size on every call to send data the agent
- * already has in a better form. A signpost costs ~26 bytes and means a reader
- * that goes straight for `content` — a host, or a model that learned the old
- * shape — is told where to look instead of seeing an empty result and
- * concluding the tool returned nothing.
+ * already has in a better form. The signpost costs 52 bytes on the wire and
+ * means a reader that goes straight for `content` — a host, or a model that
+ * learned the old shape — is told where to look instead of seeing an empty
+ * result and concluding the tool returned nothing.
  *
  * Errors are the one case that carries real text: the SDK skips output
  * validation when `isError` is set, and a failure has no typed shape beyond

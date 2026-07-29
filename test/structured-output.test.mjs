@@ -179,8 +179,13 @@ test("no successful tool call returns a text block", async () => {
     ["get_usage", {}, { "GET /usage": USAGE_BODY }],
     ["bulk", { urls: ["https://example.com/a"], wait: false }, { "POST /bulk": BULK_BODY }],
     ["crawl", { url: "https://example.com", depth: 1, wait: false }, { "POST /crawl": CRAWL_BODY }],
-    ["get_job", { job_id: "job_abc" }, { "GET /jobs/job_abc": BULK_BODY }],
-    ["wait_for_job", { job_id: "job_abc" }, { "GET /jobs/job_abc": BULK_BODY }],
+    // Both job routes are stubbed on purpose — which URL the SDK polls is its
+    // implementation detail (it moved from /bulk/{id} to the kind-agnostic
+    // /jobs/{id}), and this test is about result SHAPE, not SDK routing.
+    // Pinning one path makes the test pass against a local SDK checkout and
+    // fail in CI against the published one, which is exactly what happened.
+    ["get_job", { job_id: "job_abc" }, { "GET /jobs/job_abc": BULK_BODY, "GET /bulk/job_abc": BULK_BODY }],
+    ["wait_for_job", { job_id: "job_abc" }, { "GET /jobs/job_abc": BULK_BODY, "GET /bulk/job_abc": BULK_BODY }],
   ];
 
   for (const [name, args, routes] of cases) {

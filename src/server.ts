@@ -252,7 +252,8 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         "that runs asynchronously. By default this blocks until the job " +
         "finishes and returns all results; set wait=false to return the " +
         "queued job id immediately and poll with get_job / wait_for_job. " +
-        "Requires a Pro+ plan (Pro caps at 50 URLs per request).",
+        "Available on every plan; the plan caps URLs per job (Free 5, " +
+        "Pro 50, Growth 200, Enterprise unlimited).",
       inputSchema: {
         urls: z
           .array(z.string().url())
@@ -261,7 +262,10 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         render_js: z
           .boolean()
           .optional()
-          .describe("Render JavaScript before extracting each page. Default false."),
+          .describe(
+            "Render JavaScript before extracting each page. Requires a Pro+ " +
+              "plan, even though bulk itself does not. Default false.",
+          ),
         wait: z
           .boolean()
           .optional()
@@ -402,7 +406,11 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         render_js: z
           .boolean()
           .optional()
-          .describe("Render JavaScript on each result page before extracting. Default false."),
+          .describe(
+            "Render JavaScript on each result page before extracting. " +
+              "Requires a Pro+ plan, even though search itself does not. " +
+              "Default false.",
+          ),
         ...policyInputSchema,
         ...formatInputSchema,
       },

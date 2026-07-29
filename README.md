@@ -1,7 +1,28 @@
-# WellMarked MCP Server
+<div align="center">
+  <img src="artifacts/icon-dark.png" alt="WellMarked API Logo" width="180">
+</div>
 
-The official [Model Context Protocol](https://modelcontextprotocol.io) server for
-[WellMarked.io](https://wellmarked.io) — give your AI agents the ability to turn
+<h1 align="center">WellMarked MCP</h1>
+
+<p align="center">
+  An extremely lightweight standalone MCP server for token-efficient web scraping automation for AI agents, designed to run locally or on servers.
+</p>
+
+<p align="center">
+  ~98% smaller webpage snapshots than raw HTML.
+</p>
+
+<p align="center">
+  <a href="https://wellmarked.io"><img alt="Static Badge" src="https://img.shields.io/badge/Official_API-WellMarked-blue"></a>
+  <a href="https://github.com/WellMarkedAPI/MCP"><img src="https://img.shields.io/badge/github-repo-blue?logo=github" alt="Static Badge"></a>
+  <img src="https://img.shields.io/npm/v/wellmarked-mcp?color=green" alt="NPM Version">
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat" alt="license MIT">
+</p>
+
+---
+
+The official [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for
+[WellMarked.io](https://wellmarked.io). Give your AI agents the ability to turn
 any URL into clean Markdown, bulk-extract batches of pages, crawl entire sites,
 and search the web, all from inside Claude Desktop, Claude Code, Cursor, or any
 MCP host.
@@ -12,15 +33,15 @@ hints, and polymorphic job polling.
 
 ## Tools
 
-| Tool | What it does |
-| --- | --- |
-| `extract` | Fetch one URL and return its main content as clean Markdown + metadata. |
-| `bulk` | Submit many URLs for concurrent extraction. Blocks for results by default. Available on every plan; the plan caps URLs per job (Free 5 · Pro 50 · Growth 200 · Enterprise unlimited). |
-| `crawl` | Crawl a site BFS from a root URL to a given depth (Pro+). Returns an async job. |
-| `search` | Search the web and return each result page as clean Markdown, in one call. Available on every plan; the plan caps the result count (Free 5 · Pro 10 · Growth 50 · Enterprise uncapped). |
-| `get_job` | Poll a bulk/crawl job once by id. |
-| `wait_for_job` | Block until a job finishes, then return all results. |
-| `get_usage` | Report current billing-period quota (plan, used, limit, remaining). |
+| Tool           | What it does                                                                                                                                                                          |
+|----------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `extract`      | Fetch one URL and return its main content as clean Markdown + metadata.                                                                                                               |
+| `bulk`         | Submit many URLs for concurrent extraction. Blocks for results by default. Available on every plan; the plan caps URLs per job (Free 5 · Pro 50 · Growth 200 · Enterprise unlimited). |
+| `crawl`        | Crawl a site BFS from a root URL to a given depth (Pro+). Returns an async job.                                                                                                       |
+| `search`       | Search the web and return each result page as clean Markdown, in one call. Available on every plan; the plan caps the result count (Free 5 · Pro 10 · Growth 50 · Enterprise 200).    |
+| `get_job`      | Poll a bulk/crawl job once by id.                                                                                                                                                     |
+| `wait_for_job` | Block until a job finishes, then return all results.                                                                                                                                  |
+| `get_usage`    | Report current billing-period quota (plan, used, limit, remaining).                                                                                                                   |
 
 `extract`, `bulk`, `crawl`, and `search` all accept a `format`
 (`markdown` / `json` / `chunks` / `html` / `links`) and per-request compliance

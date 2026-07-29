@@ -11,9 +11,8 @@
  * Every tool declares an `outputSchema` and returns the payload as typed JSON
  * in `structuredContent` — nothing is flattened into prose. An agent reads
  * `status`, `completed`, `ok` or `tokensSaved` off a field; it never
- * pattern-matches `12/50` out of a sentence or reads `—` as null. There is no
- * text rendering of a successful result at all; see `ok()` for what that costs
- * and why we took the trade.
+ * pattern-matches `12/50` out of a sentence or reads `—` as null. A successful
+ * result's `content` holds only a pointer to `structuredContent`; see `ok()`.
  *
  * Tools:
  *   - extract        — one URL → clean Markdown.
@@ -47,22 +46,22 @@ import { SERVER_NAME, SERVER_VERSION } from "./version.js";
  * A success returns the payload ONCE, as typed JSON in `structuredContent`.
  * The key-value pairs travel as key-value pairs — an agent reads `status`,
  * `completed`, `ok` or `tokensSaved` off a field instead of pattern-matching
- * them out of a rendered sentence. `content` is deliberately empty: it is
- * `z.array(ContentBlockSchema).default([])` in the protocol, so an empty array
- * is valid, and the only thing a text block could carry here is a second copy
- * of data the agent already has in a better form.
+ * them out of a rendered sentence.
  *
- * The tradeoff we took: a client that reads `content` and ignores
- * `structuredContent` sees an empty result rather than a prose fallback. The
- * spec suggests serializing the JSON into a text block for exactly that case;
- * we don't, because duplicating every payload doubles the wire size to serve
- * clients we don't have. If that ever bites, `ok()` is the single place to add
- * it back.
+ * `content` carries a fixed one-line POINTER, never the data. The spec suggests
+ * serializing the payload into a text block for hosts that predate structured
+ * output, but that doubles the wire size on every call to send data the agent
+ * already has in a better form. A signpost costs ~26 bytes and means a reader
+ * that goes straight for `content` — a host, or a model that learned the old
+ * shape — is told where to look instead of seeing an empty result and
+ * concluding the tool returned nothing.
  *
- * Errors are the one case that still carries text: the SDK skips output
- * validation when `isError` is set, a failure has no typed shape beyond the
- * code already in the message, and an empty error result would say nothing.
+ * Errors are the one case that carries real text: the SDK skips output
+ * validation when `isError` is set, and a failure has no typed shape beyond
+ * the code already in the message.
  */
+const CONTENT_POINTER = '[See "structuredContent"]';
+
 type ToolResult = {
   content: { type: "text"; text: string }[];
   structuredContent?: Record<string, unknown>;
@@ -70,7 +69,7 @@ type ToolResult = {
 };
 
 function ok(structuredContent: Record<string, unknown>): ToolResult {
-  return { content: [], structuredContent };
+  return { content: [{ type: "text", text: CONTENT_POINTER }], structuredContent };
 }
 
 function fail(text: string): ToolResult {

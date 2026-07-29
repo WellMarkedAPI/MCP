@@ -169,8 +169,17 @@ test("the advertised job schema types the fields an agent branches on", async ()
   assert.equal(props.done.type, "boolean");
 });
 
-test("no successful tool call returns a text block", async () => {
+test("every tool puts the payload in structuredContent and a pointer in content", async () => {
   // The whole point of the change: a result is key-value pairs, not a document.
+  // `content` must hold the pointer and NOTHING else — an exact match catches
+  // both regressions that matter: the payload leaking back into a text block,
+  // and the pointer going missing so a `content`-only reader sees an empty
+  // result and concludes the tool returned nothing.
+  //
+  // The literal is hardcoded rather than imported from the server: this pins
+  // the string that actually goes on the wire, so a typo in the constant is a
+  // failure instead of something both sides agree on.
+  //
   // Asserted across every tool rather than one, because a single `ok()` helper
   // is easy to bypass by hand-rolling a result in one handler.
   const cases = [
@@ -193,7 +202,11 @@ test("no successful tool call returns a text block", async () => {
     try {
       const res = await callTool(name, args);
       assert.notEqual(res.isError, true, `${name} errored: ${res.content?.[0]?.text}`);
-      assert.deepEqual(res.content, [], `${name} still returns a content block`);
+      assert.deepEqual(
+        res.content,
+        [{ type: "text", text: '[See "structuredContent"]' }],
+        `${name} must carry the pointer and nothing else`,
+      );
       assert.ok(res.structuredContent, `${name} returned no structuredContent`);
       assert.equal(typeof res.structuredContent, "object");
     } finally {
@@ -204,7 +217,7 @@ test("no successful tool call returns a text block", async () => {
 
 // ── Payloads ─────────────────────────────────────────────────────────────────
 
-test("extract returns the payload as typed fields, with no text block", async () => {
+test("extract returns the payload as typed fields, not a rendered document", async () => {
   const restore = stubFetch({ "POST /extract": EXTRACT_BODY });
   try {
     const res = await callTool("extract", { url: "https://example.com/a" });
@@ -221,9 +234,9 @@ test("extract returns the payload as typed fields, with no text block", async ()
     assert.equal(sc.metrics.tokensSaved, 4600);
     assert.equal(typeof sc.metrics.reductionPct, "number");
 
-    // The payload travels ONCE. There is no prose copy to fall back to, and
+    // The payload travels ONCE. `content` is a pointer, not a prose copy, and
     // the markdown lives in a field rather than inside a rendered document.
-    assert.deepEqual(res.content, []);
+    assert.deepEqual(res.content, [{ type: "text", text: '[See "structuredContent"]' }]);
     assert.notEqual(res.isError, true);
   } finally {
     restore();

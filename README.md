@@ -51,17 +51,24 @@ rendered sentence:
 }
 ```
 
-On success `content` is an empty array. There is no prose rendering of the
-result: a payload that has key-value pairs travels as key-value pairs, and
-flattening it into a document is exactly the parsing burden this server exists
-to remove. It also halves the wire size, since nothing is sent twice.
+On success, `content` holds one fixed line and never the data:
 
-The tradeoff: a host that reads `content` and ignores `structuredContent` sees
-an empty result. The MCP spec suggests also serializing the JSON into a text
-block for those hosts; we don't, because that pays double on every call to
-serve a client we don't have.
+```json
+{ "content": [{ "type": "text", "text": "[See \"structuredContent\"]" }] }
+```
 
-Errors are the exception and still carry text — a failure has no typed shape
+There is no prose rendering of the result. A payload made of key-value pairs
+travels as key-value pairs, and flattening it into a document is exactly the
+parsing burden this server exists to remove. Sending it once rather than twice
+also halves the wire size.
+
+The MCP spec suggests serializing the payload into the text block for hosts
+that predate structured output. We don't — that pays double on every call to
+send data the agent already has in a better form. The pointer costs ~26 bytes
+and means anything reading `content` first is told where to look, instead of
+seeing an empty result and concluding the tool returned nothing.
+
+Errors are the exception and carry real text — a failure has no typed shape
 beyond the API's stable error `code`, which is already in the message.
 
 > **Not exposed as tools:** API-key rotation (`/keys/rotate`) and webhook-secret

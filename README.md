@@ -30,9 +30,10 @@ overrides (`allow_domains` / `deny_patterns` / `respect_robots`); `extract`,
 
 ### Structured output
 
-Every tool declares an `outputSchema` and returns `structuredContent` — typed
-JSON, so an agent reads `status`, `completed`, `ok`, or `tokensSaved` as real
-fields instead of pattern-matching them out of a rendered sentence:
+Every tool declares an `outputSchema` and returns the payload as typed JSON in
+`structuredContent` — and nothing else. An agent reads `status`, `completed`,
+`ok`, or `tokensSaved` as real fields instead of pattern-matching them out of a
+rendered sentence:
 
 ```json
 {
@@ -50,9 +51,18 @@ fields instead of pattern-matching them out of a rendered sentence:
 }
 ```
 
-The human-readable rendering is still returned in the usual text block, so
-hosts that don't yet read structured output behave exactly as before. Errors
-stay text-only and carry the API's stable error `code`.
+On success `content` is an empty array. There is no prose rendering of the
+result: a payload that has key-value pairs travels as key-value pairs, and
+flattening it into a document is exactly the parsing burden this server exists
+to remove. It also halves the wire size, since nothing is sent twice.
+
+The tradeoff: a host that reads `content` and ignores `structuredContent` sees
+an empty result. The MCP spec suggests also serializing the JSON into a text
+block for those hosts; we don't, because that pays double on every call to
+serve a client we don't have.
+
+Errors are the exception and still carry text — a failure has no typed shape
+beyond the API's stable error `code`, which is already in the message.
 
 > **Not exposed as tools:** API-key rotation (`/keys/rotate`) and webhook-secret
 > rotation (`/webhook/rotate`). Both are destructive and irreversible — the old

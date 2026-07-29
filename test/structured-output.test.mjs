@@ -1,9 +1,11 @@
-// Structured tool output: every tool returns typed JSON, not prose to parse.
+// Structured tool output: every tool returns typed JSON, and ONLY typed JSON.
 //
 // The thing under test is the seam an agent actually consumes. Before this,
 // `get_job` handed a model `status: running (12/50)` inside a sentence and the
 // model had to pattern-match `status`, split `12/50`, and read `—` as null.
-// Now the same call carries `structuredContent` with real JSON types.
+// Now the same call carries `structuredContent` with real JSON types, and the
+// rendered prose is gone entirely — `content` is `[]` on every success, so
+// there is no second, lossier copy of the payload for a model to read instead.
 //
 // The stub sits at `globalThis.fetch`, NOT at the client methods, so each test
 // exercises the whole chain: canned API JSON → the real SDK parser (snake_case
@@ -167,9 +169,37 @@ test("the advertised job schema types the fields an agent branches on", async ()
   assert.equal(props.done.type, "boolean");
 });
 
+test("no successful tool call returns a text block", async () => {
+  // The whole point of the change: a result is key-value pairs, not a document.
+  // Asserted across every tool rather than one, because a single `ok()` helper
+  // is easy to bypass by hand-rolling a result in one handler.
+  const cases = [
+    ["extract", { url: "https://example.com/a" }, { "POST /extract": EXTRACT_BODY }],
+    ["search", { query: "q" }, { "POST /search": SEARCH_BODY }],
+    ["get_usage", {}, { "GET /usage": USAGE_BODY }],
+    ["bulk", { urls: ["https://example.com/a"], wait: false }, { "POST /bulk": BULK_BODY }],
+    ["crawl", { url: "https://example.com", depth: 1, wait: false }, { "POST /crawl": CRAWL_BODY }],
+    ["get_job", { job_id: "job_abc" }, { "GET /jobs/job_abc": BULK_BODY }],
+    ["wait_for_job", { job_id: "job_abc" }, { "GET /jobs/job_abc": BULK_BODY }],
+  ];
+
+  for (const [name, args, routes] of cases) {
+    const restore = stubFetch(routes);
+    try {
+      const res = await callTool(name, args);
+      assert.notEqual(res.isError, true, `${name} errored: ${res.content?.[0]?.text}`);
+      assert.deepEqual(res.content, [], `${name} still returns a content block`);
+      assert.ok(res.structuredContent, `${name} returned no structuredContent`);
+      assert.equal(typeof res.structuredContent, "object");
+    } finally {
+      restore();
+    }
+  }
+});
+
 // ── Payloads ─────────────────────────────────────────────────────────────────
 
-test("extract returns typed structured content alongside the text block", async () => {
+test("extract returns the payload as typed fields, with no text block", async () => {
   const restore = stubFetch({ "POST /extract": EXTRACT_BODY });
   try {
     const res = await callTool("extract", { url: "https://example.com/a" });
@@ -186,9 +216,9 @@ test("extract returns typed structured content alongside the text block", async 
     assert.equal(sc.metrics.tokensSaved, 4600);
     assert.equal(typeof sc.metrics.reductionPct, "number");
 
-    // Back-compat: clients that ignore structuredContent still get the render.
-    assert.equal(res.content[0].type, "text");
-    assert.match(res.content[0].text, /Body text\./);
+    // The payload travels ONCE. There is no prose copy to fall back to, and
+    // the markdown lives in a field rather than inside a rendered document.
+    assert.deepEqual(res.content, []);
     assert.notEqual(res.isError, true);
   } finally {
     restore();

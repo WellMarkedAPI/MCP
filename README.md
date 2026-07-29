@@ -30,10 +30,9 @@ overrides (`allow_domains` / `deny_patterns` / `respect_robots`); `extract`,
 
 ### Structured output
 
-Every tool declares an `outputSchema` and returns the payload as typed JSON in
-`structuredContent` — and nothing else. An agent reads `status`, `completed`,
-`ok`, or `tokensSaved` as real fields instead of pattern-matching them out of a
-rendered sentence:
+Every tool returns its payload as JSON in the result's text block. An agent
+reads `status`, `completed`, `ok`, or `tokensSaved` as real fields instead of
+pattern-matching them out of a rendered sentence:
 
 ```json
 {
@@ -51,22 +50,20 @@ rendered sentence:
 }
 ```
 
-On success, `content` holds one fixed line and never the data:
-
-```json
-{ "content": [{ "type": "text", "text": "[See \"structuredContent\"]" }] }
-```
-
 There is no prose rendering of the result. A payload made of key-value pairs
 travels as key-value pairs, and flattening it into a document is exactly the
-parsing burden this server exists to remove. Sending it once rather than twice
-also halves the wire size.
+parsing burden this server exists to remove.
 
-The MCP spec suggests serializing the payload into the text block for hosts
-that predate structured output. We don't — that pays double on every call to
-send data the agent already has in a better form. The pointer costs 52 bytes on
-the wire and means anything reading `content` first is told where to look,
-instead of seeing an empty result and concluding the tool returned nothing.
+The payload rides in `content`, and is deliberately **not** duplicated into
+`structuredContent`. Hosts surface `content` to the model and several ignore
+`structuredContent` entirely, so a payload sent only there is invisible to the
+agent; sending it in both places doubles the tokens on every response.
+
+JSON-as-text is also the most structured shape `content` can carry. MCP content
+blocks are a closed set — `text`, `image`, `audio`, `resource_link`,
+`resource` — and none of them holds a raw object. An off-spec block type such
+as `application/json` fails schema validation in the client and kills the whole
+call, so it is not an option.
 
 Errors are the exception and carry real text — a failure has no typed shape
 beyond the API's stable error `code`, which is already in the message.

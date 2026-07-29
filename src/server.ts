@@ -8,11 +8,9 @@
  * layer only translates MCP tool calls into SDK calls and hands the results
  * back to the agent.
  *
- * Every tool declares an `outputSchema` and returns the payload as typed JSON
- * in `structuredContent` — nothing is flattened into prose. An agent reads
- * `status`, `completed`, `ok` or `tokensSaved` off a field; it never
- * pattern-matches `12/50` out of a sentence or reads `—` as null. A successful
- * result's `content` holds only a pointer to `structuredContent`; see `ok()`.
+ * Every tool returns its payload as JSON in the result's text block, so an
+ * agent reads fields off directly (`status`, `completed`, `ok`, `tokensSaved`)
+ * instead of pattern-matching them out of a rendered sentence — see `ok()`.
  *
  * Tools:
  *   - extract        — one URL → clean Markdown.
@@ -43,49 +41,38 @@ import { SERVER_NAME, SERVER_VERSION } from "./version.js";
 /**
  * Tool result helpers.
  *
- * A success returns the payload ONCE, as typed JSON in `structuredContent`.
- * The key-value pairs travel as key-value pairs — an agent reads `status`,
- * `completed`, `ok` or `tokensSaved` off a field instead of pattern-matching
- * them out of a rendered sentence.
+ * A success carries the payload ONCE, as JSON in the text block.
  *
- * `content` carries a fixed one-line POINTER, never the data. The spec suggests
- * serializing the payload into a text block for hosts that predate structured
- * output, but that doubles the wire size on every call to send data the agent
- * already has in a better form. The signpost costs 52 bytes on the wire and
- * means a reader that goes straight for `content` — a host, or a model that
- * learned the old shape — is told where to look instead of seeing an empty
- * result and concluding the tool returned nothing.
+ * It deliberately does NOT go in `structuredContent`. Hosts surface `content`
+ * to the model and several ignore `structuredContent` entirely, so a payload
+ * sent only there is invisible to the agent; sending it in both places just
+ * doubles the tokens on every response.
  *
- * Errors are the one case that carries real text: the SDK skips output
- * validation when `isError` is set, and a failure has no typed shape beyond
- * the code already in the message.
+ * JSON-as-text is also the most structured shape `content` can hold. MCP's
+ * `ContentBlockSchema` is a closed union — text | image | audio |
+ * resource_link | resource — so no block type carries a raw object, and an
+ * off-spec `type` (e.g. "application/json") fails that union in the client
+ * and kills the whole call.
+ *
+ * `JSON.stringify` handles the SDK's shapes directly: `Date` fields
+ * (`createdAt`, `finishedAt`, `retrievedAt`) serialize to ISO strings, and the
+ * SDK's computed fields (`ok`, `done`) are object-literal getters, i.e. own
+ * enumerable properties, so they materialize as plain booleans.
+ *
+ * Errors stay prose: a failure has no shape beyond the code already in the
+ * message.
  */
-const CONTENT_POINTER = '[See "structuredContent"]';
-
 type ToolResult = {
   content: { type: "text"; text: string }[];
-  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
 
-function ok(structuredContent: Record<string, unknown>): ToolResult {
-  return { content: [{ type: "text", text: CONTENT_POINTER }], structuredContent };
+function ok(payload: unknown): ToolResult {
+  return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
 }
 
 function fail(text: string): ToolResult {
   return { content: [{ type: "text", text }], isError: true };
-}
-
-/**
- * Render an SDK object exactly as it will travel on the wire.
- *
- * Two things this fixes, both of which would fail output validation if the SDK
- * object were passed through as-is: `Date` fields (`createdAt`, `finishedAt`,
- * `retrievedAt`) become ISO strings, and the SDK's computed getters (`ok`,
- * `done`) materialize as plain boolean fields.
- */
-function jsonify(value: unknown): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
 
 /**
@@ -195,130 +182,6 @@ function toPolicyOptions(a: PolicyToolArgs): {
   };
 }
 
-
-// ── Output schemas ────────────────────────────────────────────────────────────
-// These mirror the SDK's response types (see `wellmarked`'s models.d.ts) and are
-// published to clients as each tool's `outputSchema`, so an agent knows the
-// shape of `structuredContent` before it ever calls the tool.
-//
-// They are deliberately a projection of the SDK types rather than a
-// generated-from-source artifact: the SDK's types are TypeScript interfaces,
-// which don't survive to runtime, and Zod is what the MCP SDK validates
-// against. Drift is caught by test/structured-output.test.mjs, which asserts
-// every tool's real result parses against its declared schema.
-
-/** Content fields shared by every extraction result. Exactly one is populated,
- *  per the request's `format`; the rest are null. */
-const contentOutputShape = {
-  markdown: z.string().nullable(),
-  blocks: z
-    .array(
-      z.object({
-        type: z.enum(["heading", "paragraph", "list", "code"]),
-        text: z.string(),
-        level: z.number().int().nullable(),
-      }),
-    )
-    .nullable(),
-  chunks: z
-    .array(
-      z.object({
-        text: z.string(),
-        startToken: z.number().int(),
-        endToken: z.number().int(),
-      }),
-    )
-    .nullable(),
-  html: z.string().nullable(),
-  links: z.array(z.string()).nullable(),
-  metrics: z
-    .object({
-      contentBytes: z.number(),
-      inputTokens: z.number().nullable(),
-      outputTokens: z.number().nullable(),
-      tokensSaved: z.number().nullable(),
-      reductionPct: z.number().nullable(),
-    })
-    .nullable(),
-};
-
-const metadataSchema = z.object({
-  url: z.string(),
-  title: z.string().nullable(),
-  author: z.string().nullable(),
-  date: z.string().nullable(),
-  retrievedAt: z.string().nullable().describe("ISO 8601 timestamp."),
-});
-
-const extractOutputShape = {
-  ...contentOutputShape,
-  metadata: metadataSchema,
-  requestId: z.string(),
-};
-
-/** One bulk item or crawl page. `depth` is crawl-only, hence optional. */
-const jobItemSchema = z.object({
-  ...contentOutputShape,
-  url: z.string(),
-  metadata: metadataSchema.nullable(),
-  error: z
-    .string()
-    .nullable()
-    .describe("Stable API error code (e.g. target_timeout), never a message."),
-  ok: z.boolean(),
-  depth: z.number().int().optional().describe("Crawl only: BFS depth from the root."),
-});
-
-/** One schema for both job kinds — `bulk`, `crawl`, `get_job`, and
- *  `wait_for_job` all return a BulkJob or a CrawlJob, and `get_job` is
- *  polymorphic by design. Crawl-only fields are optional; read `kind` to
- *  discriminate. */
-const jobOutputShape = {
-  kind: z.enum(["bulk", "crawl"]),
-  jobId: z.string(),
-  status: z.enum(["queued", "processing", "done"]),
-  total: z.number().int(),
-  completed: z.number().int(),
-  done: z.boolean().describe("True when status === 'done'."),
-  results: z.array(jobItemSchema),
-  createdAt: z.string().nullable().describe("ISO 8601 timestamp."),
-  finishedAt: z.string().nullable().describe("ISO 8601 timestamp."),
-  webhookSigningSecret: z
-    .string()
-    .nullable()
-    .describe("Shown once, on the submission that minted it. Null on polls."),
-  truncated: z.boolean().optional().describe("Crawl only."),
-  truncatedReason: z
-    .enum(["page_cap_reached", "quota_exhausted"])
-    .nullable()
-    .optional()
-    .describe("Crawl only."),
-};
-
-const searchOutputShape = {
-  query: z.string(),
-  requestId: z.string(),
-  results: z.array(
-    z.object({
-      ...contentOutputShape,
-      url: z.string(),
-      status: z.enum(["ok", "error"]),
-      title: z.string().nullable(),
-      snippet: z.string().nullable(),
-      error: z.string().nullable(),
-      ok: z.boolean(),
-    }),
-  ),
-};
-
-const usageOutputShape = {
-  plan: z.string(),
-  period: z.string(),
-  used: z.number(),
-  limit: z.number(),
-  remaining: z.number(),
-};
-
 /**
  * Build a configured MCP server. The `WellMarked` client is created once and
  * shared across all tool invocations for the life of the process.
@@ -358,7 +221,6 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         ...formatInputSchema,
         ...retryInputSchema,
       },
-      outputSchema: extractOutputShape,
       annotations: {
         readOnlyHint: true,
         openWorldHint: true,
@@ -373,7 +235,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           retry,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
-        return ok(jsonify(result));
+        return ok(result);
       } catch (err) {
         return toErrorResult(err);
       }
@@ -417,7 +279,6 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         ...formatInputSchema,
         ...retryInputSchema,
       },
-      outputSchema: jobOutputShape,
       annotations: { openWorldHint: true },
     },
     async ({ urls, render_js, format, retry, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
@@ -433,7 +294,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
             timeoutMs: wait_timeout_ms ?? 300_000,
           })) as BulkJob;
         }
-        return ok(jsonify(job));
+        return ok(job);
       } catch (err) {
         return toErrorResult(err);
       }
@@ -490,7 +351,6 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         ...formatInputSchema,
         ...retryInputSchema,
       },
-      outputSchema: jobOutputShape,
       annotations: { openWorldHint: true },
     },
     async ({ url, depth, render_js, format, retry, max_pages, wait, wait_timeout_ms, allow_domains, deny_patterns, respect_robots }) => {
@@ -508,7 +368,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
             timeoutMs: wait_timeout_ms ?? 300_000,
           });
         }
-        return ok(jsonify(job));
+        return ok(job);
       } catch (err) {
         return toErrorResult(err);
       }
@@ -526,23 +386,18 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         "poll. Use this to answer a question from the live web when you don't " +
         "already have the URLs. Returns up to num_results pages, each with a " +
         "status (a slow or blocked page comes back as an error item, not a " +
-        "failure of the whole call). Available on every plan; the plan caps how " +
-        "many results one search may return.",
+        "failure of the whole call). Available on every plan.",
       inputSchema: {
         query: z.string().min(1).describe("The search query."),
-        // No upper bound here on purpose. The cap is the caller's PLAN, which
-        // this server can't see — bounding it locally would reject a number
-        // that's perfectly valid on a bigger plan, and would do it with a
-        // schema error instead of the API's 422 naming the actual cap.
         num_results: z
           .number()
           .int()
           .min(1)
           .optional()
           .describe(
-            "How many results to fetch + extract. Default 5. Capped by plan: " +
-              "Free 5, Pro 10, Growth 50, Enterprise uncapped. Asking for more " +
-              "than your plan allows returns search_cap_exceeded.",
+            "How many results to fetch + extract. Default 5. The ceiling is " +
+              "set by your plan (Free 5, Pro 10, Growth 50, Enterprise " +
+              "uncapped); asking for more returns search_cap_exceeded.",
           ),
         render_js: z
           .boolean()
@@ -551,7 +406,6 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         ...policyInputSchema,
         ...formatInputSchema,
       },
-      outputSchema: searchOutputShape,
       annotations: {
         readOnlyHint: true,
         openWorldHint: true,
@@ -565,7 +419,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           format,
           ...toPolicyOptions({ allow_domains, deny_patterns, respect_robots }),
         });
-        return ok(jsonify(res));
+        return ok(res);
       } catch (err) {
         return toErrorResult(err);
       }
@@ -584,7 +438,6 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
       inputSchema: {
         job_id: z.string().describe("The job id returned by bulk or crawl."),
       },
-      outputSchema: jobOutputShape,
       annotations: {
         readOnlyHint: true,
         openWorldHint: true,
@@ -594,7 +447,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
     async ({ job_id }) => {
       try {
         const job = await client.getJob(job_id);
-        return ok(jsonify(job));
+        return ok(job);
       } catch (err) {
         return toErrorResult(err);
       }
@@ -626,7 +479,6 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           .optional()
           .describe("Ms between status polls. Default 2000."),
       },
-      outputSchema: jobOutputShape,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ job_id, timeout_ms, poll_interval_ms }) => {
@@ -635,7 +487,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
           timeoutMs: timeout_ms ?? 300_000,
           pollIntervalMs: poll_interval_ms ?? 2_000,
         });
-        return ok(jsonify(job));
+        return ok(job);
       } catch (err) {
         return toErrorResult(err);
       }
@@ -653,7 +505,6 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         "the quota. Check this before a large bulk or crawl to avoid " +
         "hitting the monthly limit mid-job.",
       inputSchema: {},
-      outputSchema: usageOutputShape,
       annotations: {
         readOnlyHint: true,
         openWorldHint: true,
@@ -663,7 +514,7 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
     async () => {
       try {
         const usage = await client.getUsage();
-        return ok(jsonify(usage));
+        return ok(usage);
       } catch (err) {
         return toErrorResult(err);
       }

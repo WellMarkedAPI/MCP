@@ -1,6 +1,6 @@
 {
   "name": "wellmarked-mcp",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "description": "Official Model Context Protocol (MCP) server for the WellMarked API — let AI agents convert any URL to clean Markdown, bulk-extract, and crawl sites.",
   "keywords": [
     "wellmarked",

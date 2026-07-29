@@ -300,6 +300,34 @@ test("get_usage returns numbers, not a formatted percentage line", async () => {
   }
 });
 
+// ── Input bounds ─────────────────────────────────────────────────────────────
+// Lives here because this file already owns the fetch stub, which is the only
+// way to prove a value survived the whole chain rather than being rejected at
+// the tool boundary.
+
+test("num_results is not bounded locally, so a big-plan count reaches the API", async () => {
+  // `num_results` used to carry .max(10) in the tool's inputSchema. A Growth
+  // caller entitled to 50 got a zod rejection from THIS server and the API
+  // never saw the request — so the 422 that names the real plan cap could
+  // never be returned. The cap lives on the plan, which this server can't see.
+  let sentBody;
+  const previous = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    sentBody = JSON.parse(init.body);
+    return new Response(JSON.stringify({ ...SEARCH_BODY, results: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const res = await callTool("search", { query: "q", num_results: 50 });
+    assert.notEqual(res.isError, true, "50 must not be rejected at the tool boundary");
+    assert.equal(sentBody.num_results, 50);
+  } finally {
+    globalThis.fetch = previous;
+  }
+});
+
 // ── Error path ───────────────────────────────────────────────────────────────
 
 test("an API error stays text-only and does not trip output validation", async () => {

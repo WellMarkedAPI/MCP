@@ -17,7 +17,7 @@ hints, and polymorphic job polling.
 | `extract` | Fetch one URL and return its main content as clean Markdown + metadata. |
 | `bulk` | Submit many URLs for concurrent extraction (Pro+). Blocks for results by default. |
 | `crawl` | Crawl a site BFS from a root URL to a given depth (Pro+). Returns an async job. |
-| `search` | Search the web and return each result page as clean Markdown, in one call (Pro+). |
+| `search` | Search the web and return each result page as clean Markdown, in one call. Available on every plan; the plan caps the result count (Free 5 · Pro 10 · Growth 50 · Enterprise uncapped). |
 | `get_job` | Poll a bulk/crawl job once by id. |
 | `wait_for_job` | Block until a job finishes, then return all results. |
 | `get_usage` | Report current billing-period quota (plan, used, limit, remaining). |

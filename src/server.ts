@@ -662,16 +662,24 @@ export function createServer(options: WellMarkedOptions = {}): McpServer {
         "poll. Use this to answer a question from the live web when you don't " +
         "already have the URLs. Returns up to num_results pages, each with a " +
         "status (a slow or blocked page comes back as an error item, not a " +
-        "failure of the whole call). Requires a Pro+ plan.",
+        "failure of the whole call). Available on every plan; the plan caps how " +
+        "many results one search may return.",
       inputSchema: {
         query: z.string().min(1).describe("The search query."),
+        // No upper bound here on purpose. The cap is the caller's PLAN, which
+        // this server can't see — bounding it locally would reject a number
+        // that's perfectly valid on a bigger plan, and would do it with a
+        // schema error instead of the API's 422 naming the actual cap.
         num_results: z
           .number()
           .int()
           .min(1)
-          .max(10)
           .optional()
-          .describe("How many results to fetch + extract (1–10). Default 5."),
+          .describe(
+            "How many results to fetch + extract. Default 5. Capped by plan: " +
+              "Free 5, Pro 10, Growth 50, Enterprise uncapped. Asking for more " +
+              "than your plan allows returns search_cap_exceeded.",
+          ),
         render_js: z
           .boolean()
           .optional()

@@ -25,7 +25,7 @@ The official [Model Context Protocol (MCP)](https://modelcontextprotocol.io) ser
 [WellMarked.io](https://wellmarked.io). Give your AI agents the ability to turn
 any URL into clean Markdown, bulk-extract batches of pages, crawl entire sites,
 and search the web, all from inside Claude Desktop, Claude Code, Cursor, or any
-MCP host.
+MCP host. This MCP also supports local setups.
 
 It's a thin adapter over the official [`wellmarked`](https://www.npmjs.com/package/wellmarked)
 JavaScript SDK, so it inherits the SDK's auth, typed errors, retry/back-off

@@ -117,8 +117,12 @@ There are two ways to connect, depending on your host:
 Add WellMarked as a **custom connector** and point it at:
 
 ```
-https://mcp.wellmarked.io/mcp
+https://mcp.wellmarked.io
 ```
+
+`https://mcp.wellmarked.io/mcp` also still works and always will — connectors
+added before the root became canonical keep functioning unchanged. New ones
+should use the root.
 
 Your host discovers the authorization server automatically (via
 `/.well-known/oauth-protected-resource`), walks you through signing in to

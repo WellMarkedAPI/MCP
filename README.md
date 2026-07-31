@@ -31,6 +31,8 @@ It's a thin adapter over the official [`wellmarked`](https://www.npmjs.com/packa
 JavaScript SDK, so it inherits the SDK's auth, typed errors, retry/back-off
 hints, and polymorphic job polling.
 
+📖 **[MCP documentation](https://wellmarked.io/docs/sdks/mcp)** · [API reference](https://wellmarked.io/docs/api/extraction/extract) · [Errors](https://wellmarked.io/docs/guides/errors)
+
 ## Tools
 
 | Tool           | What it does                                                                                                                                                                          |

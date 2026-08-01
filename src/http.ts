@@ -189,14 +189,29 @@ const httpServer = createHttpServer((req, res) => {
 
   if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
     return sendJson(res, 200, {
-      resource: `${publicBaseUrl(req)}/mcp`,
+      // The resource identifier is the ROOT, with no trailing path and no
+      // trailing slash — RFC 8707 canonical form for a resource served at the
+      // origin. It used to be `${publicBaseUrl(req)}/mcp`.
+      //
+      // Safe to change because nothing binds a token to it: verifyToken()
+      // treats the access token as an ordinary `wm_` API key and validates it
+      // by probing GET /usage. There is no JWT and no audience claim, and the
+      // API only records `resource` on the pending authorization request
+      // rather than enforcing it. So this affects DISCOVERY only — no
+      // already-issued token is invalidated.
+      resource: publicBaseUrl(req),
       authorization_servers: [API_BASE_URL],
       scopes_supported: OAUTH_SCOPES,
       bearer_methods_supported: ["header"],
     });
   }
 
-  if (url.pathname === "/mcp") {
+  // The MCP endpoint is the ROOT. "/mcp" is kept as a permanent compatibility
+  // alias: every Claude.ai connector already added at
+  // https://mcp.wellmarked.io/mcp is registered against that path, and simply
+  // moving it would 404 them — which surfaces to those users as "connector
+  // unavailable" with nothing to act on. Serving both costs one condition.
+  if (url.pathname === "/" || url.pathname === "/mcp") {
     if (req.method === "POST") {
       void handleMcp(req, res).catch((err) => {
         process.stderr.write(`[wellmarked-mcp] request failed: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -206,7 +221,21 @@ const httpServer = createHttpServer((req, res) => {
       });
       return;
     }
-    // Stateless mode has no standalone SSE stream or session teardown.
+
+    // A bare GET on the root of a public hostname shouldn't look dead, so the
+    // root answers with a small info payload instead of the 405 that /mcp
+    // returns. Stateless mode has no standalone SSE stream or session
+    // teardown, so POST really is the only MCP verb here.
+    if (req.method === "GET" && url.pathname === "/") {
+      return sendJson(res, 200, {
+        name: "wellmarked-mcp",
+        transport: "streamable-http",
+        endpoint: publicBaseUrl(req),
+        method: "POST",
+        documentation: "https://wellmarked.io/docs/sdks/mcp",
+      });
+    }
+
     res.setHeader("Allow", "POST");
     return sendJson(res, 405, { error: "method_not_allowed" });
   }
